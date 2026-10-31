@@ -1,0 +1,67 @@
+test_agent_volume_and_configuration_preserved (test_reconstruction.Agent.test_agent_volume_and_configuration_preserved) ... ok
+test_create_failure_rolls_back_only_agent (test_reconstruction.Agent.test_create_failure_rolls_back_only_agent) ... ok
+test_external_replacement_never_deleted (test_reconstruction.Agent.test_external_replacement_never_deleted) ... ok
+test_rename_failure_restores_old (test_reconstruction.Agent.test_rename_failure_restores_old) ... ok
+test_start_failure_restores_old_agent (test_reconstruction.Agent.test_start_failure_restores_old_agent) ... ok
+test_stop_failure_keeps_old (test_reconstruction.Agent.test_stop_failure_keeps_old) ... ok
+test_busy_guest_left_on_action (test_reconstruction.BashFlows.test_busy_guest_left_on_action) ... ok
+test_http_down_action (test_reconstruction.BashFlows.test_http_down_action) ... ok
+test_node_both_negative_is_offline (test_reconstruction.BashFlows.test_node_both_negative_is_offline) ... ok
+test_node_ping_only_is_online (test_reconstruction.BashFlows.test_node_ping_only_is_online) ... ok
+test_node_ssh_only_is_online (test_reconstruction.BashFlows.test_node_ssh_only_is_online) ... ok
+test_originally_running_not_shutdown (test_reconstruction.BashFlows.test_originally_running_not_shutdown) ... ok
+test_snapshot_200_retains_two_plus_three (test_reconstruction.BashFlows.test_snapshot_200_retains_two_plus_three) ... ok
+test_status_trailing_content_rejected (test_reconstruction.BashFlows.test_status_trailing_content_rejected) ... ok
+test_status_wrong_run_not_complete (test_reconstruction.BashFlows.test_status_wrong_run_not_complete) ... ok
+test_telegram_api_false_is_failure (test_reconstruction.BashFlows.test_telegram_api_false_is_failure) ... ok
+test_telegram_unicode_chunks (test_reconstruction.BashFlows.test_telegram_unicode_chunks) ... ok
+test_temporarily_started_restored (test_reconstruction.BashFlows.test_temporarily_started_restored) ... ok
+test_database_branch_and_secret_free_override (test_reconstruction.Compose.test_database_branch_and_secret_free_override) ... NOTE|Agent passato a latest; volumi e configurazione preservati
+WARN|db: ramo DB 12.3; major/EOL richiedono verifica
+WARN|pg: ramo DB 18; major/EOL richiedono verifica
+ok
+test_hermes_defense_no_inventory (test_reconstruction.Compose.test_hermes_defense_no_inventory) ... ok
+test_missing_override_blocks_project (test_reconstruction.Compose.test_missing_override_blocks_project) ... ok
+test_persistent_mount_change_rejected (test_reconstruction.Compose.test_persistent_mount_change_rejected) ... ok
+test_profiles_wp_off_other_active_preserved (test_reconstruction.Compose.test_profiles_wp_off_other_active_preserved) ... ok
+test_project_and_env_identity (test_reconstruction.Compose.test_project_and_env_identity) ... ok
+test_project_failure_continues_next (test_reconstruction.Compose.test_project_failure_continues_next) ... FAIL|injected
+FAIL|injected
+WARN|Inventario pre-reboot assente
+ok
+test_running_without_health_is_warn (test_reconstruction.Compose.test_running_without_health_is_warn) ... ok
+test_stopped_old_project_not_revived (test_reconstruction.Compose.test_stopped_old_project_not_revived) ... ok
+test_unhealthy_fails (test_reconstruction.Compose.test_unhealthy_fails) ... FAIL|c: non pronto/unhealthy
+ok
+test_watchtower_only_standalone_names (test_reconstruction.Compose.test_watchtower_only_standalone_names) ... ok
+test_watchtower_stderr_is_not_discarded (test_reconstruction.Compose.test_watchtower_stderr_is_not_discarded) ... ok
+test_wp_dependency_pma_rejected (test_reconstruction.Compose.test_wp_dependency_pma_rejected) ... ok
+test_conflict_never_overwrites (test_reconstruction.Import.test_conflict_never_overwrites) ... ok
+test_existing_equal_not_rewritten (test_reconstruction.Import.test_existing_equal_not_rewritten) ... ok
+test_failed_write_retains_inbox (test_reconstruction.Import.test_failed_write_retains_inbox) ... ok
+test_write_readback_archive (test_reconstruction.Import.test_write_readback_archive) ... ok
+test_action_is_failure (test_reconstruction.Ledger.test_action_is_failure) ... ok
+test_atomic_destination_symlink_rejected (test_reconstruction.Ledger.test_atomic_destination_symlink_rejected) ... ok
+test_cache_ten_pending_never_deleted (test_reconstruction.Ledger.test_cache_ten_pending_never_deleted) ... ok
+test_crash_between_freeze_and_file_write_recovers (test_reconstruction.Ledger.test_crash_between_freeze_and_file_write_recovers) ... ok
+test_dedup_and_explicit_retry (test_reconstruction.Ledger.test_dedup_and_explicit_retry) ... ok
+test_expired_report_payload_removed_from_ledger (test_reconstruction.Ledger.test_expired_report_payload_removed_from_ledger) ... ok
+test_nas_collision_keeps_local (test_reconstruction.Ledger.test_nas_collision_keeps_local) ... ok
+test_nas_readback_receipt_retry_and_retention (test_reconstruction.Ledger.test_nas_readback_receipt_retry_and_retention) ... ok
+test_nas_unmounted_keeps_outbox (test_reconstruction.Ledger.test_nas_unmounted_keeps_outbox) ... ok
+test_report_idempotent (test_reconstruction.Ledger.test_report_idempotent) ... ok
+test_state_symlink_rejected (test_reconstruction.Ledger.test_state_symlink_rejected) ... ok
+test_after_reboot_old_masks_not_restored (test_reconstruction.Locks.test_after_reboot_old_masks_not_restored) ... ok
+test_package_symlink_rejected (test_reconstruction.Locks.test_package_symlink_rejected) ... ok
+test_real_posix_package_lock_blocks_guard (test_reconstruction.Locks.test_real_posix_package_lock_blocks_guard) ... ok
+test_restore_only_owned_masks_and_active_timers (test_reconstruction.Locks.test_restore_only_owned_masks_and_active_timers) ... ok
+test_only_positions_no_command_values (test_reconstruction.Scanner.test_only_positions_no_command_values) ... ok
+test_apt_fail_still_docker_and_nonzero (test_reconstruction.Worker.test_apt_fail_still_docker_and_nonzero) ... ok
+test_hermes_failed_waited_reboot_zero_docker (test_reconstruction.Worker.test_hermes_failed_waited_reboot_zero_docker) ... ok
+test_morning_no_docker_update (test_reconstruction.Worker.test_morning_no_docker_update) ... ok
+test_night_no_apt (test_reconstruction.Worker.test_night_no_apt) ... ok
+
+----------------------------------------------------------------------
+Ran 55 tests in 0.513s
+
+OK

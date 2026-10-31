@@ -1,0 +1,8 @@
+/var/log/pve-maintenance.log /var/log/update-guests-cron.log /var/log/update-web-cron.log /var/lib/proxmox-maintenance/delivery.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

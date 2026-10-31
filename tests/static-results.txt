@@ -1,0 +1,3 @@
+bash -n: PASS (5 files)
+Python AST: PASS (6 files)
+ShellCheck: NOT AVAILABLE

@@ -1,0 +1,8 @@
+# Riferimento di compatibilita: NON viene source/appended automaticamente.
+# La configurazione reale resta /etc/update-guests.conf, privata e root-owned.
+# Policy concordate implementate nel coordinatore:
+# LXC200: APT generale, Docker notturno; snapshot 2 pre-update +3 pre-web-update.
+# LXC106: snapshot vietati. LXC1000: Docker vietato.
+# NAS_MOUNT=/mnt/pve/NAS; retention 60 giorni; cache host10 +outbox pendente.
+# Hermes import rinviato; nessun nuovo cron Hermes.
+# Consultare README-IT.md per i parametri effettivamente riconosciuti.
