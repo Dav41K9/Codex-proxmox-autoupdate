@@ -1,0 +1,116 @@
+--- a/proxmox-maintenance/guard.py
++++ b/proxmox-maintenance/guard.py
+@@ -17,6 +17,8 @@
+     if state['boot']==boot():
+         for u,v in state['units'].items():
+             if v['mask'] and cmd('systemctl','unmask','--runtime',u).returncode:raise RuntimeError('unmask '+u)
++        # Restore ALL dependencies before starting any timer.
++        for u,v in state['units'].items():
+             if u.endswith('.timer') and v['active'] and cmd('systemctl','start',u).returncode:raise RuntimeError('restore '+u)
+     p.unlink()
+ def prepare(run):
+--- a/proxmox-maintenance/coordinator.sh
++++ b/proxmox-maintenance/coordinator.sh
+@@ -31,7 +31,7 @@
+ if ((DRY)) || [[ ${DRY_RUN:-0} == 1 ]];then echo "DRY RUN $SCOPE: nessuna modifica; snapshot200=2+3; NAS=60giorni; Hermes import rinviato";exit 0;fi
+ LOG=/var/log/pve-maintenance.log
+ store(){ python3 "$LIB/state.py" "$STATE" "$@"; }
+-event(){ store event "$RUN_ID" "$1" "$2" "$3" || exit 1;printf '%s %s %s\n' "$1" "$2" "$3" >>"$LOG"; }
++event(){ store event "$RUN_ID" "$1" "$2" "$3" || exit 1;printf '%s %s %s\n' "$1" "$2" "$3" | tee -a "$LOG"; }
+ action(){ event ACTION "$1" "$2 — INTERVENTO MANUALE RICHIESTO"; }
+ telegram(){
+     [[ "$SEND_TELEGRAM" == 1 && "$NO_TELEGRAM" == 0 ]] || return 0
+@@ -81,7 +81,8 @@
+     if [[ "$kind" == lxc ]];then dirs=${LXC_COMPOSE_DIRS[$id]:-};[[ "$id" != 200 ]] || dirs=$WEB_COMPOSE_DIR;fi
+     encoded=$(printf '%s' "$dirs" | python3 -c 'import sys,shlex,base64;s=sys.stdin.read();v=s.splitlines() if "\n" in s else shlex.split(s);print(base64.b64encode("\n".join(v).encode()).decode())') || return 1
+     printf -v envline 'RUN_ID=%q KIND=%q GUEST_ID=%q MODE=%q COMPOSE_DIRS_B64=%q WEB_COMPOSE_DIR=%q APT_TIMEOUT=%q COMPOSE_WAIT_SECONDS=%q DOCKER_PRUNE=%q STANDALONE_MODE=%q SKIP_DOCKER=%q bash %q' "$worker_run" "$kind" "$id" "$mode" "$encoded" "$WEB_COMPOSE_DIR" "$APT_TIMEOUT" "$COMPOSE_WAIT_SECONDS" "$DOCKER_PRUNE" "$STANDALONE_MODE" "$skip" "$DIR/pve-guest-worker.sh"
+-    remote "$kind" "$id" bash -c "$envline </dev/null" >>"$LOG" 2>&1 || rc=$?
++    event NOTE "$kind $id" "Avvio fase $mode; attendo il completamento"
++    remote "$kind" "$id" bash -c "$envline </dev/null" 2>&1 | tee -a "$LOG" || rc=$?
+     local data;data=$(remote "$kind" "$id" cat "$STATE/worker-status/$worker_run.status" 2>/dev/null) || data=''
+     parse "$kind $id" "$data" "$worker_run"
+     ((rc==0)) || event FAIL "$kind $id" "Worker rc=$rc"
+@@ -171,13 +172,13 @@
+         code=$(remote lxc 200 curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 10 -H "Host: $WEB_HTTP_HOST" http://127.0.0.1:8080/wp-login.php 2>/dev/null) || code=000
+         [[ "$code" != 200 ]] || { event NOTE WordPress 'HTTP200 login; checkout non certificato';return; };sleep 5
+     done
+-    action WordPress "SITO DOWN/non verificabile HTTP=$code"
++    action WordPress "Check HTTP fallito: /wp-login.php HTTP=$code; disponibilita del sito non accertata"
+ }
+ finish(){
+     local result body pid done=0
+     result=$(store finish "$RUN_ID") || return 1
+     FINAL=1
+-    body=$(store alert "$RUN_ID") || body='FAIL lettura riepilogo'
++    body=$(store summary "$RUN_ID") || body='FAIL lettura riepilogo'
+     store archive "$NAS_MOUNT" 9>&- >"$STATE/archive.log" 2>&1 & pid=$!
+     for ((i=0;i<45;i++));do kill -0 "$pid" 2>/dev/null || { done=1;break; };sleep 1;done
+     if ((done)) && wait "$pid";then :;else
+@@ -206,7 +207,7 @@
+ exec 9>/var/lock/update-guests.lock
+ flock -w 21600 9 || { telegram 'FAIL lock manutenzione occupato oltre 6 ore';exit 75; }
+ rc=0;store begin "$RUN_ID" "$SCOPE" "$(date +%F)" "$RETRY" || rc=$?
+-((rc!=75)) || { echo 'Duplicato giornaliero evitato; retry esplicito --retry';exit 0; }
++((rc!=75)) || { echo 'Job gia registrato oggi, anche se fallito/interrotto: nessun aggiornamento eseguito. Controllare il report; --retry solo per una ripetizione deliberata';exit 0; }
+ ((rc==0)) || exit 1
+ CLAIMED=1;trap 'on_exit $?' EXIT;trap 'exit 143' TERM HUP;trap 'exit 130' INT
+ DIR="$STATE/runtime/$RUN_ID"
+--- a/proxmox-maintenance/state.py
++++ b/proxmox-maintenance/state.py
+@@ -57,6 +57,20 @@
+             for p in cached[10:]:p.unlink()
+             link=self.root/'latest.md';temp=self.root/'.latest.tmp';temp.unlink(missing_ok=True);temp.symlink_to('reports/'+cached[0].name);os.replace(temp,link)
+         return status,name
++    def summary(self,run):
++        groups={}
++        rank={'NOTE':0,'REBOOT':0,'WARN':1,'FAIL':2,'ACTION':3}
++        for level,target,msg in self.db.execute('SELECT level,target,msg FROM events WHERE run=?',(run,)):
++            target=target.strip()
++            if target not in groups or rank[level]>rank[groups[target][0]]:groups[target]=(level,msg)
++        counts=[sum(rank[v[0]]==0 for v in groups.values()),sum(rank[v[0]]>=2 for v in groups.values()),sum(rank[v[0]]==1 for v in groups.values())]
++        lines=[f'✅ OK {counts[0]} | ❌ FAIL {counts[1]} | WARN {counts[2]} (target)']
++        bad=sorted(((t,v) for t,v in groups.items() if rank[v[0]]>=2),key=lambda x:-rank[x[1][0]])
++        for target,(level,msg) in bad[:8]:lines.append(target+': '+('INTERVENTO: ' if level=='ACTION' else '')+msg.replace('\n',' ')[:100])
++        if len(bad)>8:lines.append(f'Altri {len(bad)-8} target con errori: vedere report.')
++        if counts[2]:lines.append('Dettagli WARN nel report completo.')
++        lines.append('Report completo su host/NAS; consegna NAS verificata separatamente.')
++        return '\n'.join(lines)
+     def archive(self,mount):
+         fd=os.open(self.root/'archive.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+         try:
+@@ -110,6 +124,7 @@
+     elif cmd=='unfinished':
+         for (r,) in s.db.execute('SELECT id FROM runs WHERE finished=0 AND id!=?',a):print(r)
+     elif cmd=='finish':print('|'.join(s.finish(a[0])))
++    elif cmd=='summary':print(s.summary(a[0]))
+     elif cmd=='alert':
+         for level,target,msg in s.db.execute("SELECT level,target,msg FROM events WHERE run=? AND level!='NOTE' ORDER BY CASE level WHEN 'ACTION' THEN 0 WHEN 'FAIL' THEN 1 ELSE 2 END",a):print(level+' '+target+': '+msg)
+     elif cmd=='archive':s.archive(a[0])
+--- a/proxmox-maintenance/pve-guest-worker.sh
++++ b/proxmox-maintenance/pve-guest-worker.sh
+@@ -141,7 +141,7 @@
+     local rc=0 line
+     local -a args=()
+     [[ "$MODE" != health ]] || args+=(--health)
+-    python3 "$LIB/docker-maint.py" "${args[@]}" >"$WORK/docker.log" 2>&1 || rc=$?
++    python3 "$LIB/docker-maint.py" "${args[@]}" 2>&1 | tee "$WORK/docker.log" || rc=$?
+     while IFS= read -r line;do case "$line" in FAIL\|*) fail "${line#*|}";;WARN\|*) warn "${line#*|}";;NOTE\|*) note "${line#*|}";;*) printf '%s\n' "$line";;esac;done <"$WORK/docker.log"
+     ((rc==0)) || fail "Docker helper rc=$rc"
+     if [[ "$MODE" != health && "$DOCKER_PRUNE" == 1 ]] && ((FAILURES==0));then run_cmd 'Prune immagini create prima di 14 giorni, nessun volume' docker image prune -af --filter "until=$DOCKER_IMAGE_PRUNE_AGE";fi
+--- a/proxmox-maintenance/docker-maint.py
++++ b/proxmox-maintenance/docker-maint.py
+@@ -123,10 +123,12 @@
+     if not check:
+         if any('paperless-ngx/paperless-ngx' in v.get('image','') for v in model['services'].values()):
+             q=subprocess.run([sys.executable,str(pathlib.Path(__file__).with_name('guard.py')),'app-idle'],capture_output=True)
+-            if q.returncode:raise RuntimeError('Import Paperless attivo: progetto rinviato')
++            if q.returncode:raise RuntimeError('Paperless rinviato: import inattivo/coordinamento timer non confermati')
+         policy=override(model,name,wd)
+         if policy:args+=['-f',policy]
+-        for step in (['config','--quiet'],['pull','--ignore-buildable',*chosen],['build','--pull','--no-cache',*chosen],['up','-d','--wait','--wait-timeout',os.environ.get('COMPOSE_WAIT_SECONDS','240'),*chosen]):docker(*args,*step,cwd=wd,env=env)
++        for step in (['config','--quiet'],['pull','--ignore-buildable',*chosen],['build','--pull','--no-cache',*chosen],['up','-d','--wait','--wait-timeout',os.environ.get('COMPOSE_WAIT_SECONDS','240'),*chosen]):
++            emit('NOTE',name+': Compose '+step[0]+' in corso')
++            docker(*args,*step,cwd=wd,env=env)
+     after=[r for r in inventory() if r['labels'].get('com.docker.compose.project')==name and r['labels'].get('com.docker.compose.project.working_dir')==wd]
+     present={r['labels'].get('com.docker.compose.service') for r in after if r['running']}
+     if set(chosen)-present:emit('FAIL',name+': servizi mancanti '+','.join(sorted(set(chosen)-present)))
