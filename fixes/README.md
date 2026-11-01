@@ -1,3 +1,5 @@
+> **STORICO: queste candidate sono confluite nella release4.1. Non applicare questa patch alla4.1.** Consultare il README principale.
+
 # Correzioni candidate — 1 novembre 2026
 
 **Non è una nuova release approvata per cron. Il ZIP in dist resta quello precedente.**

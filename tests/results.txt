@@ -51,17 +51,42 @@ test_nas_readback_receipt_retry_and_retention (test_reconstruction.Ledger.test_n
 test_nas_unmounted_keeps_outbox (test_reconstruction.Ledger.test_nas_unmounted_keeps_outbox) ... ok
 test_report_idempotent (test_reconstruction.Ledger.test_report_idempotent) ... ok
 test_state_symlink_rejected (test_reconstruction.Ledger.test_state_symlink_rejected) ... ok
+test_summary_groups_counts_and_prioritizes_manual_action (test_reconstruction.Ledger.test_summary_groups_counts_and_prioritizes_manual_action) ... ok
 test_after_reboot_old_masks_not_restored (test_reconstruction.Locks.test_after_reboot_old_masks_not_restored) ... ok
+test_failed_unmask_does_not_start_timers_or_delete_journal (test_reconstruction.Locks.test_failed_unmask_does_not_start_timers_or_delete_journal) ... ok
 test_package_symlink_rejected (test_reconstruction.Locks.test_package_symlink_rejected) ... ok
 test_real_posix_package_lock_blocks_guard (test_reconstruction.Locks.test_real_posix_package_lock_blocks_guard) ... ok
 test_restore_only_owned_masks_and_active_timers (test_reconstruction.Locks.test_restore_only_owned_masks_and_active_timers) ... ok
+test_unmask_dependencies_before_starting_any_timer (test_reconstruction.Locks.test_unmask_dependencies_before_starting_any_timer) ... ok
 test_only_positions_no_command_values (test_reconstruction.Scanner.test_only_positions_no_command_values) ... ok
 test_apt_fail_still_docker_and_nonzero (test_reconstruction.Worker.test_apt_fail_still_docker_and_nonzero) ... ok
+test_apt_index_lock_is_retried_without_killing_a_transaction (test_reconstruction.Worker.test_apt_index_lock_is_retried_without_killing_a_transaction) ... ok
 test_hermes_failed_waited_reboot_zero_docker (test_reconstruction.Worker.test_hermes_failed_waited_reboot_zero_docker) ... ok
 test_morning_no_docker_update (test_reconstruction.Worker.test_morning_no_docker_update) ... ok
 test_night_no_apt (test_reconstruction.Worker.test_night_no_apt) ... ok
+test_check_makes_no_installation_even_with_scheduler_warning (test_simplified.Installer.test_check_makes_no_installation_even_with_scheduler_warning) ... ok
+test_enable_cron_conflict_refused_before_mutations (test_simplified.Installer.test_enable_cron_conflict_refused_before_mutations) ... ok
+test_enable_cron_has_only_two_scheduled_jobs (test_simplified.Installer.test_enable_cron_has_only_two_scheduled_jobs) ... ok
+test_install_allowed_with_scheduler_warning_no_cron (test_simplified.Installer.test_install_allowed_with_scheduler_warning_no_cron) ... ok
+test_repair_does_not_invoke_update_or_power_commands (test_simplified.RecoveryUtility.test_repair_does_not_invoke_update_or_power_commands) ... ok
+test_cron_runs_same_day_are_deduplicated (test_simplified.ScopeAndScheduling.test_cron_runs_same_day_are_deduplicated) ... ok
+test_general_recovers_all_pending_guests (test_simplified.ScopeAndScheduling.test_general_recovers_all_pending_guests) ... ok
+test_manual_busy_lock_returns_without_starting_work (test_simplified.ScopeAndScheduling.test_manual_busy_lock_returns_without_starting_work) ... ok
+test_manual_runs_same_day_do_not_require_retry (test_simplified.ScopeAndScheduling.test_manual_runs_same_day_do_not_require_retry) ... ok
+test_wordpress_recovers_only_200 (test_simplified.ScopeAndScheduling.test_wordpress_recovers_only_200) ... ok
+test_custom_paperless_stops_timer_only_without_mask (test_simplified.TimerPolicy.test_custom_paperless_stops_timer_only_without_mask) ... ok
+test_host_without_paperless_does_not_touch_apt_timers (test_simplified.TimerPolicy.test_host_without_paperless_does_not_touch_apt_timers) ... ok
+test_import_busy_is_never_stopped_and_timer_can_be_restored (test_simplified.TimerPolicy.test_import_busy_is_never_stopped_and_timer_can_be_restored) ... ok
+test_preexisting_inactive_timer_stays_inactive (test_simplified.TimerPolicy.test_preexisting_inactive_timer_stays_inactive) ... ok
+test_guest_boot_wait_accepts_degraded_but_not_starting (test_simplified.WebAndRecovery.test_guest_boot_wait_accepts_degraded_but_not_starting) ... ok
+test_guest_boot_wait_failure_is_not_false_ready (test_simplified.WebAndRecovery.test_guest_boot_wait_failure_is_not_false_ready) ... ok
+test_history_does_not_replay_old_updates (test_simplified.WebAndRecovery.test_history_does_not_replay_old_updates) ... ok
+test_homepage_both_checks_pass_and_login_not_used (test_simplified.WebAndRecovery.test_homepage_both_checks_pass_and_login_not_used) ... ok
+test_public_failure_not_hidden_by_local_success (test_simplified.WebAndRecovery.test_public_failure_not_hidden_by_local_success) ... ok
+test_running_guest_restores_timer_even_if_import_busy (test_simplified.WebAndRecovery.test_running_guest_restores_timer_even_if_import_busy) ... ok
+test_restore_worker_uses_inherited_descriptor (test_simplified.WorkerLock.test_restore_worker_uses_inherited_descriptor) ... ok
 
 ----------------------------------------------------------------------
-Ran 55 tests in 0.513s
+Ran 80 tests in 1.449s
 
 OK

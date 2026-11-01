@@ -1,4 +1,4 @@
 # Fuso host Europe/Zurich o Europe/Rome. Lock globale e dedup giornaliera.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-30 3 * * * root /usr/local/sbin/update-web.sh >> /var/log/update-web-cron.log 2>&1
-0 5 * * 1,3,5 root /usr/local/sbin/update-proxmox-guests.sh >> /var/log/update-guests-cron.log 2>&1
+30 3 * * * root /usr/local/sbin/update-web.sh --scheduled >> /var/log/update-web-cron.log 2>&1
+0 5 * * 1,3,5 root /usr/local/sbin/update-proxmox-guests.sh --scheduled >> /var/log/update-guests-cron.log 2>&1

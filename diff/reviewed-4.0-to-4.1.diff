@@ -1,0 +1,788 @@
+--- /dev/null
++++ proxmox-maintenance/CHANGELOG-4.1.md
+@@ -0,0 +1,20 @@
++# 4.1 — correzioni del collaudo e semplificazione
++
++Baseline funzionale: v3.1, con v2.4 solo come riferimento storico. Conservata la separazione originale generale/WordPress; recuperata la visibilità diretta delle fasi e una notifica breve. Non vengono riproposti errori mascherati, pull senza ricreazione, esclusione mancata di Docker1000 o stop forzati delle vecchie versioni.
++
++1. Eliminata la quarantena tramite nuovi mask systemd. La compatibilità con i vecchi journal resta solo per riparare i blocchi già lasciati in giro.
++2. Ripristino legacy in due passaggi: prima tutti gli unmask di propria competenza, poi i timer originariamente attivi. Nessun riavvio di timer se un unmask fallisce.
++3. Paperless: stop/start del solo timer, compatibile con unit custom in /etc; nessuna interruzione del servizio import. Stato originario preservato.
++4. APT usa l'attesa del lock nativa, lasciando i normali timer APT intatti.
++5. Output live via tee con pipefail; fasi Compose visibili e stderr dei fallimenti nel log privato. Status e exit code non diventano OK perché tee riesce.
++6. Telegram sintetico: due emoji, conteggi per target, priorità agli interventi manuali, warning/riavvii rimandati al report completo. Report invariato nella completezza.
++7. Health WordPress basato sulla homepage locale/pubblica verificata dall'utente; niente dipendenza da wp-login.php. Redirect non etichettato da solo come sito down.
++8. Recupero del notturno confinato a200; nessun replay nel report di APT/Docker eseguiti da vecchi worker sugli altri guest.
++9. Niente obbligo --retry per i lanci manuali. Dedup giornaliera riservata al cron --scheduled; lock comune sempre presente.
++10. Installer: conflitti scheduler segnalati ma non bloccanti per installare il fix; rimangono bloccanti per abilitare cron. Controlli di abilitazione prima delle modifiche. Configurazione reale non riscritta, backup esistenti conservati.
++11. Attesa esplicita del boot dei guest avviati temporaneamente e dopo reboot, prima dei controlli applicativi.
++12. Utility di riparazione una tantum maintenance-recover.sh, senza aggiornamenti o azioni di power. Non è un terzo job periodico.
++
++Restano: APT/Docker indipendenti fra fasi e guest, Hermes atteso e riavviato, zero Docker1000, no snapshot106, cinque snapshot200 totali gestiti, WOL/shutdown condizionale nodo2, avvisi su guest non ripristinati, cache10/NAS60giorni, nessun nuovo servizio residente.
++
++Non viene dichiarato che i dati siano consistenti soltanto perché un container è running. Non sono stati effettuati test live o operazioni sul server dell'utente.
+--- reviewed-4.0/README-IT.md
++++ proxmox-maintenance/README-IT.md
+@@ -1,60 +1,91 @@
+-# Manutenzione Proxmox — ricostruzione reviewed
++# Manutenzione Proxmox 4.1 — uso pratico
+ 
+-Versione: **4-reviewed-reconstructed-20261031**. Baseline di confronto funzionale: v3.1; baseline del diff: i nove file della v4 originale. Il vecchio ZIP reviewed non è stato recuperato. I risultati di vecchi test non sono attribuiti a questa ricostruzione.
++Due job, come nelle versioni iniziali:
+ 
+-## Decisioni implementate
++- `update-proxmox-guests.sh`: APT sui nodi/LXC/VM configurati, Docker negli altri guest, Hermes nel1000. Su200 fa APT, non pull/build/up Docker.
++- `update-web.sh`: Docker completo del200, Compose/build e standalone, snapshot e controlli WordPress. Non aggiorna altri guest.
+ 
+-- Job generale lunedì/mercoledì/venerdì alle 05:00; WordPress ogni notte alle 03:30, fuso dell'host Europe/Zurich o Europe/Rome.
+-- Lock unico, attesa massima sei ore, deduplica persistente per job/giorno. `--retry` autorizza una ripetizione deliberata. Non avviare direttamente i worker.
+-- LXC200: APT al mattino; Compose, build senza cache con aggiornamento base, standalone e prune nel notturno. Entrambi controllano HTTP e notificano gli errori via Telegram.
+-- LXC200: **cinque snapshot gestiti totali**, due `pre-update` più tre `pre-web-update`; entrambi i job ripuliscono entrambe le famiglie. Durante creazione/eliminazione può esistere una copia aggiuntiva temporanea. Snapshot manuali e backup estranei non vengono eliminati. Un errore di eliminazione viene segnalato e può lasciare più di cinque copie.
+-- LXC106: nessuno snapshot; Paperless e CouchDB aggiornati con identità Compose completa. Il timer di importazione viene coordinato temporaneamente; un import già attivo non viene terminato. Se la coordinazione non è verificabile, Paperless viene rinviato con FAIL.
+-- LXC1000: APT, Hermes come utente `hermes` con comando assoluto e `--yes`, attesa sincrona, reboot completo verificato da boot ID. Nessun comando Docker, incluse interrogazioni. Lo stato della dashboard prima dell'update non è un blocco; il controllo viene effettuato dopo reboot.
+-- Nodo2: WOL dopo ping e SSH negativi; update SSH; shutdown soltanto se avviato dal job e aggiornamento completato. Un nodo già acceso resta acceso. Ownership dubbia dopo crash: rimane acceso e richiede intervento.
+-- LXC temporanei: ritorno a spento dopo controllo dei lock POSIX dpkg/APT e del worker. Nessuno stop forzato. Se occupati o non verificabili: FAIL/ACTION nel report e su Telegram, con richiesta di intervento.
+-- NAS: `/mnt/pve/NAS/proxmox-maintenance/reports`, **60 giorni di storico**, sottocartelle private. Cache host di dieci report; coda locale non ancora consegnata conservata anche oltre dieci per evitare perdita. Nessuna modifica ai permessi globali del NAS.
+-- Importazione Hermes/Obsidian rinviata alla successiva fase concordata. È incluso un helper da validare, ma non viene installato un bridge NAS→Hermes né creato un cron Hermes. Nessuna manipolazione diretta di CouchDB.
++Entrambi mostrano l'avanzamento direttamente a video, scrivono un report Markdown completo e inviano un riepilogo breve Telegram. Nessun nuovo servizio residente, nessun pacchetto Python esterno.
+ 
+-## Installazione deliberata
++## Installazione e recupero della versione precedente
+ 
+-Il pacchetto non include `/etc/update-guests.conf` reale e non lo sostituisce. Deve già esistere, essere root-owned, non symlink e non scrivibile da altri. Il file contiene codice Bash e viene trattato come configurazione fidata.
+-
+-Dalla directory estratta, sul nodo Proxmox:
++Conserva `/etc/update-guests.conf` esistente: l'installer non cambia credenziali, password, `.env`, elenco guest o directory Compose. Eseguire come root sul nodo principale, dalla directory `proxmox-maintenance` del nuovo ZIP:
+ 
+ ```bash
+ bash install.sh --check
++bash install.sh --install
++maintenance-recover.sh
+ ```
+ 
+-Questo controllo non installa nulla. Se segnala vecchi cron/timer, identifica solo le posizioni: esaminare localmente le righe e disabilitare i vecchi job prima della migrazione, senza pubblicare segreti. Lo scanner è conservativo: non può scoprire scheduler esterni o tutti i wrapper dinamici.
++Controllare l'esito di ogni comando prima di passare al successivo. `--install` non crea cron e non avvia aggiornamenti. Lo scanner dei vecchi scheduler segnala eventuali conflitti ma non impedisce l'installazione del codice correttivo. I conflitti continuano a bloccare `--enable-cron`.
+ 
+-Solo dopo la checklist di REVIEW-IT.md:
++**`maintenance-recover.sh` serve una volta per il difetto della versione precedente:** ripristina soltanto i timer registrati dal nostro journal, sull'host, nei LXC accesi e sui target SSH configurati/raggiungibili. Non esegue APT, Docker, WOL, reboot o shutdown; non avvia guest spenti. Usa il lock comune e si rifiuta di intervenire mentre un worker è ancora attivo. Non cancella il journal che serve a riportare i guest allo stato iniziale. Se termina con FAIL, leggere il target e l'errore; non cancellare lock o stato per aggirarlo.
++
++Se un vecchio cron è già attivo, metterlo in pausa prima della migrazione: l'installer non ferma job in esecuzione e non rimuove automaticamente schedulazioni amministrative. Nel collaudo comunicato dall'utente il cron di questo updater era assente.
++
++## Collaudo manuale
++
++In `/etc/update-guests.conf`, verificare `DRY_RUN=0` e `SEND_TELEGRAM=1` per un'esecuzione reale con notifiche; non riscrivere il file con un esempio incompleto.
+ 
+ ```bash
+-bash install.sh --install
+-/usr/local/sbin/update-proxmox-guests.sh --dry-run
+-/usr/local/sbin/update-web.sh --dry-run
++update-web.sh
+ ```
+ 
+-`--install` copia codice e backup; non esegue l'updater e non crea cron. Il dry-run mostra la policy, **non simula comandi remoti o compatibilità applicativa**. Le esecuzioni reali vanno fatte in una finestra di prova, con recovery verificato. `--enable-cron` è un'azione separata esplicita, documentata ma non eseguita da questa revisione.
++Attendere la fine e controllare il report indicato a video, Telegram, homepage, carrello/checkout di test e volumi. Il comando fa aggiornamenti reali: usare una finestra di manutenzione con backup verificato. Non serve `--retry` per un secondo lancio manuale nello stesso giorno. Se un altro job è in corso, il nuovo lancio manuale si ferma con un messaggio, senza accodare un altro aggiornamento.
+ 
+-Un cron già installato da questa stessa versione resta presente durante l'aggiornamento del codice: fermare la schedulazione se si vuole una finestra senza nuovi job. L'installazione usa il lock comune.
++Dopo un collaudo WordPress soddisfacente:
+ 
+-## Configurazione compatibile e differenze
++```bash
++update-proxmox-guests.sh
++```
+ 
+-Sono letti: `UPDATE_HOST`, `UPDATE_NODE2`, `NODE2_IP`, `NODE2_MAC`, `NODE2_WOL_BROADCAST`, `NODE2_STOP_AFTER`, `LXC_IDS`, `VM_SSH_TARGETS`, array `SSH_OPTS`, `START_STOPPED_LXC`, `STOP_LXC_STARTED_BY_SCRIPT`, `CREATE_SNAPSHOTS`, `SNAPSHOT_SKIP_IDS`, `DOCKER_SKIP_IDS`, array associativo `LXC_COMPOSE_DIRS`, `WEB_COMPOSE_DIR`, `WEB_HTTP_HOST`, `NAS_MOUNT`, `SEND_TELEGRAM`, le credenziali Telegram esistenti, `COMPOSE_WAIT_SECONDS`, `APT_TIMEOUT`, `DOCKER_PRUNE`, `STANDALONE_MODE`, `DRY_RUN`.
++Verificare timer ripristinati, guest al loro stato iniziale, Hermes aggiornato e reboot completato, applicazioni disponibili. Un nodo2 già acceso resta acceso. Il nodo2 svegliato da questa esecuzione viene spento dopo il successo del worker e il controllo dei lock; errori reali lo lasciano acceso con alert. Un nodo rimasto acceso da una precedente esecuzione fallita è ora «già acceso»: non viene spento presumendo che nessuno ci stia lavorando.
+ 
+-Per ogni directory Compose con spazi usare un elemento quotato shell nella stringa di `LXC_COMPOSE_DIRS`, oppure directory separate da newline. Nessuna esecuzione della stringa: parsing shlex e trasporto base64. I file Compose/envfile rilevati dalle label devono tutti esistere.
++I comandi sono in primo piano: non occorre tail/tmux per vedere l'avanzamento. Chiudere SSH o premere Ctrl-C nell'updater può comunque interrompere il coordinatore. Ctrl-C in una diversa sessione `tail -F` ferma soltanto quel tail. La notifica finale e il ritorno del prompt identificano la fine del job; non interromperlo mentre aggiorna.
+ 
+-La ricostruzione applica direttamente le decisioni concordate: snapshot200=2+3, altri=2, esclusione106, zeroDocker1000, NAS60giorni, cache10. I precedenti parametri di retention/prefisso, timeout di startup/shutdown e consegna Hermes non vengono applicati. Non viene aggiunto automaticamente un blocco di configurazione. Timeout reboot/shutdown=120s; attesa iniziale SSH nodo2=120s oltre i tempi delle singole chiamate. Questo è un cambiamento rispetto alla v4 originale.
++## Attivazione cron
+ 
+-I canali immagini sono applicati tramite un piccolo override Compose root-only, senza scrivere `.env` o il Compose originale. WordPress conserva la build; MariaDB segue il ramo major.minor, PostgreSQL il major; Redis/nginx e componenti applicativi noti seguono canali mobili. I major database non vengono migrati automaticamente da un tag numerico. CouchDB già su `latest` resta tale e produce un avviso. Portainer agent noto passa a `latest` con ricreazione conservativa e recupero dedicato. Immagini ID sconosciute, digest e tag fissi non riconosciuti vengono segnalati.
++Solo dopo il collaudo live, senza FAIL/ACTION irrisolti:
+ 
+-## Operatività e recupero
++```bash
++bash install.sh --enable-cron
++systemctl is-active cron
++```
+ 
+-Stato persistente root-only in `/var/lib/proxmox-maintenance`: database SQLite standardlib, worker status, quarantena temporanea timer, outbox, cache, ricevute NAS e `delivery.log`. Nessun servizio residente aggiunto. Gli helper remoti Python3 e il lock del worker permettono il recupero di un coordinatore interrotto; non cancellare questi file per sbloccare il job.
++L'installer verifica configurazione notifiche, DRY_RUN disattivo, fuso Europe/Zurich/Europe/Rome e assenza di scheduler concorrenti rilevati. Non installare gli stessi comandi anche nel crontab root. La scansione non scopre ogni scheduler esterno o wrapper dinamico: controllare eventuali aggiornamenti Portainer/Watchtower/Hermes aggiuntivi.
+ 
+-Un'interruzione non garantisce il cleanup immediato. Il job successivo tenta il recupero; se un worker/APT è ancora attivo non lo termina e non spegne il guest. Con SIGKILL, crash host o Telegram irraggiungibile non è possibile garantire una notifica immediata. Gli errori Telegram restano in `delivery.log` e danno exit code non zero. Il report di manutenzione viene congelato prima del trasporto: NAS/Telegram hanno ricevute separate.
++- WordPress ogni giorno03:30.
++- Generale lunedì/mercoledì/venerdì05:00.
++- Solo il cron usa `--scheduled`, che mantiene deduplica giornaliera e attesa del lock fino a sei ore. I lanci manuali sono ripetibili, sempre senza sovrapposizione. `--retry` resta compatibile per un retry esplicito con `--scheduled`, ma non è necessario nell'uso normale.
+ 
+-NFS bloccato in stato kernel D non è eliminabile con un timeout userspace: dopo 45s il coordinatore prosegue, mantiene la coda e segnala la consegna pendente; un processo archiviatore può restare bloccato con il suo lock. Non riavviare alla cieca mentre esistono transazioni.
++Un job manuale già completato quel giorno può far saltare quello schedulato per la deduplica. Il lock serializza i due job se il notturno dura oltre le05:00.
+ 
+-I backup di installazione sono in `/var/backups/pve-maintenance-*`; le release in `/usr/local/libexec/pve-maintenance-releases`. Conservare la precedente release per rollback del codice. Questo **non** effettua rollback di database o immagini applicative. Verificare sempre dati e stato servizi prima di riattivare cron.
++## Cosa resta semplice e cosa viene protetto
++
++- **APT:** niente più mask di timer o servizi. Full-upgrade/autoremove attendono il lock APT fino a300s; nessun timeout che uccide dpkg durante la transazione. Indici APT incompleti impediscono il full-upgrade, ma le altre fasi/guest proseguono e il report conserva FAIL.
++- **Paperless106:** stop temporaneo del solo `paperless-import.timer`, conservandone lo stato precedente; nessun mask, drop-in o modifica del file unit. Non si termina un import in corso. Se è attivo, le fasi che richiedono coordinazione vengono rinviate e segnalate; gli altri progetti possono proseguire. Il timer viene ripristinato anche se il guest rimane acceso per un problema. Attività lanciate manualmente o da scheduler esterni non sono coordinate automaticamente: evitare avvii concorrenti durante la manutenzione.
++- **Power:** worker lock e lock POSIX APT/dpkg controllati prima di reboot/shutdown; niente `pct stop` forzato. Se una transazione o import è attivo, LXC lasciato acceso con ACTION.
++- **Hermes1000:** APT → `hermes update --yes` come hermes, atteso senza timeout → reboot completo. Zero comandi Docker, incluse interrogazioni. Dashboard verificata dopo reboot; gateway da verificare anche funzionalmente.
++- **WordPress:** homepage locale con Host corretto più homepage HTTPS pubblica, redirect HTTPS limitati e certificato verificato. Nessun controllo su login privato. HTTP200 non certifica checkout o consistenza DB. Il job WordPress recupera solo200; i pendenti degli altri guest sono segnalati e lasciati al generale. I risultati dei vecchi worker non vengono ripubblicati come nuovi aggiornamenti.
++- **Dati:** identità Compose completa, file/envfile e volumi verificati, niente `down -v`, niente volume prune, pma escluso, password intatte. Prune immagini solo dopo assenza di FAIL.
++- **Snapshot:**200 al massimo2 generali+3 WordPress al termine del cleanup riuscito;106 escluso; altri2 generali. Snapshot manuali estranei non cancellati. Snapshot falliti segnalati. Un errore di eliminazione può lasciare copie oltre il limite; nessun rollback DB automatico.
++- **Report:** cache host10, NAS60giorni, outbox non consegnata preservata. Report dettagliato; Telegram conteggi per target e problemi prioritari, non il report integrale. I log tecnici sono privati e possono contenere output dei programmi: non pubblicarli automaticamente.
++- **Hermes/Obsidian:** import dei report ancora rinviato come concordato; nessun nuovo cron/bridge e nessun accesso diretto ai dati CouchDB.
++
++## Dove leggere i risultati
++
++- Report recente: `/var/lib/proxmox-maintenance/latest.md`.
++- Report per run: `/var/lib/proxmox-maintenance/reports/`.
++- Debug completo: `/var/log/pve-maintenance.log`.
++- Consegne NAS/Telegram: `/var/lib/proxmox-maintenance/delivery.log`.
++- Archivio NAS: `/mnt/pve/NAS/proxmox-maintenance/reports/` per impostazione predefinita.
++
++Il report distingue la manutenzione dalla consegna: controllare che arrivi Telegram e che il file sia effettivamente sul NAS. Un NAS irraggiungibile conserva i report in outbox e genera un avviso. Non è possibile garantire una notifica Telegram quando Telegram/rete sono indisponibili: l'errore rimane nel log e nell'exit code.
++
++## Parametri e limiti
++
++Rimangono quelli già documentati per l'inventario, SSH/WOL, directory Compose, notifiche, `WEB_HTTP_HOST`, `NAS_MOUNT`, start/stop LXC, snapshot e timeout APT/Compose. La configurazione viene trattata come codice Bash root fidato. Nessun nuovo parametro è necessario per la migrazione.
++
++I rami database numerici restano sulla linea scelta; immagini applicative note seguono i canali mobili concordati. Una immagine `latest` può includere cambiamenti incompatibili: cinque snapshot non sostituiscono un backup applicativo e una prova di restore, soprattutto per mount esterni/NAS. Gli aggiornamenti major DB non vengono inventati tramite cambio automatico di un tag numerico.
++
++Questa release è verificata staticamente e con simulazioni, non è stata eseguita sul cluster dell'utente. I test e i loro limiti sono in `VALIDAZIONE-4.1.md`.
+--- reviewed-4.0/REVIEW-IT.md
++++ proxmox-maintenance/REVIEW-IT.md
+@@ -1,3 +1,5 @@
++> **Documento storico della ricostruzione4.0.** Per la4.1 usare README-IT.md, CHANGELOG-4.1.md e VALIDAZIONE-4.1.md. Le limitazioni e i meccanismi qui descritti non costituiscono la procedura corrente.
++
+ # Revisione della ricostruzione
+ 
+ ## A. Verdetto
+--- /dev/null
++++ proxmox-maintenance/VALIDAZIONE-4.1.md
+@@ -0,0 +1,35 @@
++# Validazione4.1 — 1 novembre2026
++
++**80 test passati nella nuova esecuzione**, non risultati attribuiti al vecchio ambiente. Log completo: `tests/results.txt`.
++
++Controlli statici: `bash -n` su6 script e parsing AST su6 Python. ShellCheck non disponibile in questo ambiente: non viene dichiarato eseguito.
++
++Comandi riproducibili dalla radice estratta/repository:
++
++```bash
++python3 -m unittest discover -s tests -v
++for f in proxmox-maintenance/*.sh; do bash -n "$f"; done
++```
++
++Copertura significativa:
++
++- errori APT che non impediscono Docker, nessun full-upgrade dopo errore indici, attesa/riprova solo dell'errore lock indici;
++- Hermes eseguito e atteso anche quando fallisce, marker reboot, zero comandi Docker1000;
++- timer custom Paperless fermato/ripristinato senza mask; timer originariamente inattivo non avviato; import attivo mai terminato;
++- ripristino legacy: tutti gli unmask prima di ogni start timer; journal conservato in caso di errore;
++- lock POSIX dpkg realmente conteso con un secondo processo; descriptor ereditato dal worker per il ripristino;
++- attesa boot guest (running/degraded, con limite) prima del worker e dopo reboot;
++- guest temporaneo ripristinato, guest occupato lasciato acceso con ACTION, guest inizialmente acceso non spento;
++- recupero WordPress limitato a200, generale su tutti i pendenti, nessun replay di vecchi aggiornamenti nel report;
++- lanci manuali ripetibili nello stesso giorno, cron deduplicato, lock occupato senza avviare un secondo job;
++- HTTP homepage locale+HTTPS pubblico: successo di entrambi richiesto; errore pubblico non nascosto da locale200; login non interrogato;
++- identità Compose/file/envfile, profili WP, volumi persistenti, prosecuzione fra progetti, standalone esclusivi Watchtower, stderr errori non scartato;
++- Portainer agent: config/volumi preservati nei mock e rollback del solo agent se stop/rename/create/start falliscono;
++- report immutabili, recupero dopo errore di scrittura, cache10, outbox preservata, NAS readback/collisioni/retention60giorni;
++- Telegram JSON.ok=false non accettato, Unicode, riepilogo raggruppato con priorità agli interventi;
++- installer eseguito in filesystem di prova: check senza installazione, installazione non bloccata da warning scanner, cron bloccato dai conflitti prima delle modifiche, esattamente due righe --scheduled;
++- utility di recupero con pct/ssh fittizi: nessun APT/Docker/WOL/reboot/shutdown e nessun avvio dei guest spenti.
++
++I test dell'installer modificano solo una directory temporanea, sostituendo i percorsi assoluti e simulando scanner/comandi esterni. Non sono installazioni su Proxmox. Timer/systemd, Docker Engine/Compose, SSH/WOL, NAS e Telegram sono mock dove indicato; non dimostrano disponibilità rete, rollback DB o compatibilità di ogni configurazione reale.
++
++Non sono stati eseguiti i due updater o il recupero sul cluster dell'utente. Prima dei cron servono un ciclo manuale WordPress, uno generale, controllo timer/stato iniziale e prove applicative. Lo stato live noto ha confermato HTTP200 delle due homepage e i difetti dei vecchi mask; non certifica questa release finché non viene collaudata.
+--- reviewed-4.0/coordinator.sh
++++ proxmox-maintenance/coordinator.sh
+@@ -7,14 +7,14 @@
+ CONFIG=/etc/update-guests.conf
+ RUN_ID=$(date -u +%Y%m%d-%H%M%S)-$$
+ SCOPE=${1:?scope};shift
+-DRY=0;RETRY=0;NO_TELEGRAM=0;CLAIMED=0;FINAL=0
+-for arg in "$@";do case "$arg" in --dry-run) DRY=1;;--retry) RETRY=1;;--no-telegram) NO_TELEGRAM=1;;*) exit 2;;esac;done
++DRY=0;RETRY=0;SCHEDULED=0;NO_TELEGRAM=0;CLAIMED=0;FINAL=0
++for arg in "$@";do case "$arg" in --dry-run) DRY=1;;--retry) RETRY=1;;--scheduled) SCHEDULED=1;;--no-telegram) NO_TELEGRAM=1;;*) exit 2;;esac;done
+ ((EUID==0)) || exit 2
+ [[ -f "$CONFIG" && ! -L "$CONFIG" && $(stat -c %u "$CONFIG") == 0 && -z $(find "$CONFIG" -perm /022 -print) ]] || { echo 'Configurazione mancante/non privata';exit 2; }
+ # shellcheck disable=SC1090
+ source "$CONFIG"
+ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+-: "${UPDATE_HOST:=1}" "${UPDATE_NODE2:=0}" "${NODE2_IP:=10.99.0.2}" "${NODE2_MAC:=}" "${NODE2_WOL_BROADCAST:=10.99.0.15}"
++: "${UPDATE_HOST:=1}" "${UPDATE_NODE2:=0}" "${NODE2_IP:=}" "${NODE2_MAC:=}" "${NODE2_WOL_BROADCAST:=255.255.255.255}"
+ : "${NODE2_STOP_AFTER:=1}" "${START_STOPPED_LXC:=1}" "${STOP_LXC_STARTED_BY_SCRIPT:=1}" "${CREATE_SNAPSHOTS:=1}"
+ : "${WEB_COMPOSE_DIR:=/home/3dft/3dft-wordpress}" "${WEB_HTTP_HOST:=3dfactoryticino.ch}" "${NAS_MOUNT:=/mnt/pve/NAS}"
+ : "${SEND_TELEGRAM:=0}" "${COMPOSE_WAIT_SECONDS:=240}" "${APT_TIMEOUT:=3600}" "${DOCKER_PRUNE:=1}" "${STANDALONE_MODE:=watchtower}"
+@@ -31,13 +31,13 @@
+ if ((DRY)) || [[ ${DRY_RUN:-0} == 1 ]];then echo "DRY RUN $SCOPE: nessuna modifica; snapshot200=2+3; NAS=60giorni; Hermes import rinviato";exit 0;fi
+ LOG=/var/log/pve-maintenance.log
+ store(){ python3 "$LIB/state.py" "$STATE" "$@"; }
+-event(){ store event "$RUN_ID" "$1" "$2" "$3" || exit 1;printf '%s %s %s\n' "$1" "$2" "$3" >>"$LOG"; }
+-action(){ event ACTION "$1" "$2 — INTERVENTO MANUALE RICHIESTO"; }
++event(){ store event "$RUN_ID" "$1" "$2" "$3" || exit 1;printf '%s %s %s\n' "$1" "$2" "$3" | tee -a "$LOG"; }
++action(){ event ACTION "$1" "$2 - INTERVENTO MANUALE RICHIESTO"; }
+ telegram(){
+     [[ "$SEND_TELEGRAM" == 1 && "$NO_TELEGRAM" == 0 ]] || return 0
+     [[ -n ${TELEGRAM_BOT_TOKEN:-} && -n ${TELEGRAM_CHAT_ID:-} ]] || return 1
+     local chunks chunk encoded response
+-    chunks=$(printf '%s' "$1" | python3 -c 'import sys,base64;s=sys.stdin.read();print("\n".join(base64.b64encode(s[i:i+700].encode()).decode() for i in range(0,len(s),700)))') || return 1
++    chunks=$(printf '%s' "$1" | python3 -c 'import sys,base64;s=sys.stdin.read();print("\n".join(base64.b64encode(s[i:i+1800].encode()).decode() for i in range(0,len(s),1800)))') || return 1
+     while IFS= read -r encoded;do
+         [[ -n "$encoded" ]] || continue
+         chunk=$(printf '%s' "$encoded" | base64 -d && printf '.');chunk=${chunk%.}
+@@ -49,7 +49,7 @@
+ remote(){ local kind=$1 target=$2;shift 2;case "$kind" in lxc) pct exec "$target" -- "$@";;host) "$@";;*) local cmd;printf -v cmd '%q ' "$@";ssh -n "${SSH_OPTS[@]}" "$target" "$cmd";;esac; }
+ node_online(){ ping -c 2 -W 2 "$1" >/dev/null 2>&1 || remote ssh "root@$1" true >/dev/null 2>&1; }
+ parse(){
+-    local target=$1 data=$2 expected=${3:-$RUN_ID} line type msg runs=0 complete=0 failures=0 warnings=0 valid=1
++    local target=$1 data=$2 expected=${3:-$RUN_ID} historical=${4:-0} line type msg runs=0 complete=0 failures=0 warnings=0 valid=1
+     STATUS_COMPLETE=0;STATUS_REBOOT=0;STATUS_FAIL=0
+     while IFS= read -r line;do
+         [[ -n "$line" ]] || continue
+@@ -58,15 +58,15 @@
+         case "$type" in
+           RUN) runs=$((runs+1));[[ "$msg" == "$expected" ]] || valid=0;;
+           COMPLETE) complete=$((complete+1));[[ "$msg" == "failures=$failures warnings=$warnings" ]] || valid=0;;
+-          FAIL) failures=$((failures+1));event FAIL "$target" "$msg";;
+-          WARN) warnings=$((warnings+1));event WARN "$target" "$msg";;
+-          NOTE) event NOTE "$target" "$msg";;
+-          REBOOT) STATUS_REBOOT=1;event REBOOT "$target" "$msg";;
+-          REBOOT_ADVICE) event REBOOT "$target" "$msg (host/VM: nessun reboot automatico)";;
++          FAIL) failures=$((failures+1));((historical)) || event FAIL "$target" "$msg";;
++          WARN) warnings=$((warnings+1));((historical)) || event WARN "$target" "$msg";;
++          NOTE) ((historical)) || event NOTE "$target" "$msg";;
++          REBOOT) STATUS_REBOOT=1;((historical)) || event REBOOT "$target" "$msg";;
++          REBOOT_ADVICE) ((historical)) || event REBOOT "$target" "$msg (host/VM: nessun reboot automatico)";;
+           *) valid=0;;
+         esac
+     done <<< "$data"
+-    if ((runs==1 && complete==1 && valid));then STATUS_COMPLETE=1;else event FAIL "$target" 'Status incompleto/non valido';fi
++    if ((runs==1 && complete==1 && valid));then STATUS_COMPLETE=1;elif ((historical));then event WARN "$target" 'Run precedente incompleto: recupero stato, non ripetizione degli aggiornamenti';else event FAIL "$target" 'Status incompleto/non valido';fi
+     ((STATUS_COMPLETE && failures==0)) || STATUS_FAIL=1
+ }
+ deploy(){
+@@ -81,11 +81,21 @@
+     if [[ "$kind" == lxc ]];then dirs=${LXC_COMPOSE_DIRS[$id]:-};[[ "$id" != 200 ]] || dirs=$WEB_COMPOSE_DIR;fi
+     encoded=$(printf '%s' "$dirs" | python3 -c 'import sys,shlex,base64;s=sys.stdin.read();v=s.splitlines() if "\n" in s else shlex.split(s);print(base64.b64encode("\n".join(v).encode()).decode())') || return 1
+     printf -v envline 'RUN_ID=%q KIND=%q GUEST_ID=%q MODE=%q COMPOSE_DIRS_B64=%q WEB_COMPOSE_DIR=%q APT_TIMEOUT=%q COMPOSE_WAIT_SECONDS=%q DOCKER_PRUNE=%q STANDALONE_MODE=%q SKIP_DOCKER=%q bash %q' "$worker_run" "$kind" "$id" "$mode" "$encoded" "$WEB_COMPOSE_DIR" "$APT_TIMEOUT" "$COMPOSE_WAIT_SECONDS" "$DOCKER_PRUNE" "$STANDALONE_MODE" "$skip" "$DIR/pve-guest-worker.sh"
+-    remote "$kind" "$id" bash -c "$envline </dev/null" >>"$LOG" 2>&1 || rc=$?
++    event NOTE "$kind $id" "Avvio fase $mode; attendo il completamento"
++    remote "$kind" "$id" bash -c "$envline </dev/null" 2>&1 | tee -a "$LOG" || rc=$?
+     local data;data=$(remote "$kind" "$id" cat "$STATE/worker-status/$worker_run.status" 2>/dev/null) || data=''
+     parse "$kind $id" "$data" "$worker_run"
+     ((rc==0)) || event FAIL "$kind $id" "Worker rc=$rc"
+     ((rc==0 && STATUS_COMPLETE && !STATUS_FAIL))
++}
++wait_guest(){
++    local id=$1 boot_state attempt
++    for ((attempt=0;attempt<40;attempt++));do
++        boot_state=$(remote lxc "$id" systemctl is-system-running 2>/dev/null) || true
++        case "$boot_state" in running|degraded) return 0;;esac
++        sleep 3
++    done
++    return 1
+ }
+ power(){
+     local id=$1 mode=$2 token="$RUN_ID-$RANDOM" pid ready=0 before after result=0
+@@ -101,7 +111,7 @@
+             result=1
+             for ((n=0;n<40;n++));do
+                 after=$(remote lxc "$id" cat /proc/sys/kernel/random/boot_id 2>/dev/null) || after=''
+-                if [[ -n "$after" && "$after" != "$before" ]];then result=0;break;fi;sleep 3
++                if [[ -n "$after" && "$after" != "$before" ]];then if wait_guest "$id";then result=0;fi;break;fi;sleep 3
+             done
+         elif [[ "$mode" == shutdown && $(state "$id") != stopped ]];then result=1;fi
+     else result=1;fi
+@@ -113,14 +123,25 @@
+ restore_guest(){
+     local id=$1 initial=$2 owned=$3
+     if [[ $(state "$id") == stopped ]];then store close "$id";return;fi
+-    if ! deploy lxc "$id" || ! remote lxc "$id" python3 "$DIR/guard.py" idle >/dev/null 2>&1;then action "LXC $id" 'Rimane acceso/non verificabile: transazione, worker o import attivo';return 1;fi
+-    if [[ "$initial" == stopped && "$owned" != 1 ]];then action "LXC $id" 'Acceso ma ownership avvio incerta';return 1;fi
++    if ! deploy lxc "$id";then action "LXC $id" 'Stato non ripristinato: guest non accessibile';return 1;fi
++    if [[ "$initial" == stopped && "$owned" != 1 ]];then
++        remote lxc "$id" python3 "$DIR/guard.py" restore || true
++        action "LXC $id" 'Acceso ma ownership avvio incerta';return 1
++    fi
+     if [[ "$initial" == stopped && "$STOP_LXC_STARTED_BY_SCRIPT" == 1 ]];then
+-        power "$id" shutdown || { action "LXC $id" 'Rimane acceso: shutdown non confermato';return 1; }
++        if ! remote lxc "$id" python3 "$DIR/guard.py" idle >/dev/null 2>&1;then
++            remote lxc "$id" python3 "$DIR/guard.py" restore || true
++            action "LXC $id" 'Rimane acceso: transazione, worker o import attivo';return 1
++        fi
++        if ! power "$id" shutdown;then
++            remote lxc "$id" python3 "$DIR/guard.py" restore || true
++            action "LXC $id" 'Rimane acceso: shutdown non confermato';return 1
++        fi
+     else remote lxc "$id" python3 "$DIR/guard.py" restore || { action "LXC $id" 'Ripristino timer fallito';return 1; };fi
+     if [[ "$id" == 1000 && $(state "$id") == running ]];then remote lxc "$id" rm -f /var/lib/proxmox-maintenance-import/maintenance.active || return 1;fi
+     store close "$id"
+ }
++
+ snapshots(){
+     local op=$1 id=$2 prefix=pre-update raw name keep skipid
+     for skipid in "${SNAPSHOT_SKIP_IDS[@]}";do [[ "$skipid" != "$id" ]] || return 0;done
+@@ -148,8 +169,10 @@
+     if [[ "$initial" == stopped ]];then
+         if pct start "$id" >>"$LOG" 2>&1;then owned=1;store guest "$id" "$RUN_ID" "$initial" 1 started || exit 1
+         else event FAIL "LXC $id" 'Start fallito';restore_guest "$id" "$initial" 0 || true;return;fi
++        if ! wait_guest "$id";then event FAIL "LXC $id" 'Avvio non pronto entro attesa';restore_guest "$id" "$initial" "$owned" || true;return;fi
+     fi
+     if ! deploy lxc "$id";then event FAIL "LXC $id" 'Deploy fallito';restore_guest "$id" "$initial" "$owned" || true;return;fi
++    event NOTE "LXC $id" "Inizio manutenzione; stato iniziale $initial"
+     snapshots create "$id"
+     [[ "$id" != 200 ]] || mode=apt
+     [[ "$SCOPE" != wordpress ]] || mode=docker
+@@ -166,18 +189,24 @@
+     restore_guest "$id" "$initial" "$owned" || true
+ }
+ web_health(){
+-    local code=000
++    local code=000 public=000 i
++    event NOTE WordPress 'Verifica homepage locale e HTTPS pubblico'
+     for ((i=0;i<18;i++));do
+-        code=$(remote lxc 200 curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 10 -H "Host: $WEB_HTTP_HOST" http://127.0.0.1:8080/wp-login.php 2>/dev/null) || code=000
+-        [[ "$code" != 200 ]] || { event NOTE WordPress 'HTTP200 login; checkout non certificato';return; };sleep 5
++        code=$(remote lxc 200 curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 10 -H "Host: $WEB_HTTP_HOST" http://127.0.0.1:8080/ 2>/dev/null) || code=000
++        if [[ "$code" == 200 ]];then
++            public=$(curl -sS -L --max-redirs 5 --proto '=https' --proto-redir '=https' --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' "https://$WEB_HTTP_HOST/" 2>/dev/null) || public=000
++            [[ "$public" != 200 ]] || { event NOTE WordPress 'Homepage locale200 e HTTPS pubblico200; checkout non certificato';return; }
++        fi
++        sleep 5
+     done
+-    action WordPress "SITO DOWN/non verificabile HTTP=$code"
+-}
++    action WordPress "Check homepage fallito: locale=$code pubblico=$public; disponibilita sito non confermata"
++}
++
+ finish(){
+     local result body pid done=0
+     result=$(store finish "$RUN_ID") || return 1
+     FINAL=1
+-    body=$(store alert "$RUN_ID") || body='FAIL lettura riepilogo'
++    body=$(store summary "$RUN_ID") || body='FAIL lettura riepilogo'
+     store archive "$NAS_MOUNT" 9>&- >"$STATE/archive.log" 2>&1 & pid=$!
+     for ((i=0;i<45;i++));do kill -0 "$pid" 2>/dev/null || { done=1;break; };sleep 1;done
+     if ((done)) && wait "$pid";then :;else
+@@ -186,7 +215,9 @@
+         body+=$'\nWARN NAS non disponibile: report conservati in coda locale'
+         printf '%s ARCHIVE_PENDING\n' "$RUN_ID" >>"$STATE/delivery.log"
+     fi
+-    telegram "[$SCOPE] $result"$'\n'"$body" || { printf '%s TELEGRAM_FAILED\n' "$RUN_ID" >>"$STATE/delivery.log";return 1; }
++    printf 'Report: %s/reports/%s\n' "$STATE" "${result#*|}"
++    telegram "[$SCOPE] ${result%%|*}"$'\n'"$body"$'\n'"Run: $RUN_ID" || { printf '%s TELEGRAM_FAILED\n' "$RUN_ID" >>"$STATE/delivery.log";echo 'FAIL invio Telegram; report conservato su host';return 1; }
++    printf 'FINE %s: %s (run %s)\n' "$SCOPE" "${result%%|*}" "$RUN_ID"
+     [[ "$result" != FAIL\|* ]]
+ }
+ on_exit(){
+@@ -204,36 +235,49 @@
+ for bin in python3 pct ssh ping flock tar base64 curl findmnt;do command -v "$bin" >/dev/null || exit 2;done
+ [[ ! -L /var/lock/update-guests.lock ]] || exit 2
+ exec 9>/var/lock/update-guests.lock
+-flock -w 21600 9 || { telegram 'FAIL lock manutenzione occupato oltre 6 ore';exit 75; }
+-rc=0;store begin "$RUN_ID" "$SCOPE" "$(date +%F)" "$RETRY" || rc=$?
+-((rc!=75)) || { echo 'Duplicato giornaliero evitato; retry esplicito --retry';exit 0; }
++if ((SCHEDULED));then
++    flock -w 21600 9 || { telegram 'FAIL lock manutenzione occupato oltre 6 ore';exit 75; }
++else
++    flock -n 9 || { echo 'Manutenzione gia in corso: nessun secondo job avviato';exit 75; }
++fi
++rc=0;store begin "$RUN_ID" "$SCOPE" "$(date +%F)" "$(( !SCHEDULED || RETRY ))" || rc=$?
++((rc!=75)) || { echo 'Job cron gia registrato oggi: duplicato evitato. Per una nuova prova eseguire lo script manualmente senza --scheduled';exit 0; }
+ ((rc==0)) || exit 1
+ CLAIMED=1;trap 'on_exit $?' EXIT;trap 'exit 143' TERM HUP;trap 'exit 130' INT
++printf 'INIZIO %s - run %s\n' "$SCOPE" "$RUN_ID" | tee -a "$LOG"
+ DIR="$STATE/runtime/$RUN_ID"
+ BUNDLE=$(tar -C "$LIB" -czf - pve-guest-worker.sh guard.py docker-maint.py agent-migrate.py | base64 -w0) || exit 1
+ declare -A BLOCKED=()
+ pending=$(store pending) || exit 1
+ while IFS='|' read -r id owner initial owned phase;do
+     [[ -n "$id" ]] || continue
+-    event WARN "LXC $id" "Recupero run $owner"
++    if [[ "$SCOPE" == wordpress && "$id" != 200 ]];then
++        event WARN "LXC $id" 'Recupero pendente lasciato al job generale; nessuna azione su questo guest'
++        continue
++    fi
++    event WARN "LXC $id" "Recupero stato iniziale della run $owner (non nuovi update)"
+     if [[ "$phase" != rebooted && $(state "$id") == running ]] && deploy lxc "$id";then
+         previous=$(remote lxc "$id" cat "$STATE/worker-status/$owner.status" 2>/dev/null) || previous=''
+-        parse "LXC $id recupero" "$previous" "$owner"
++        parse "LXC $id recupero" "$previous" "$owner" 1
+         if ((STATUS_COMPLETE && STATUS_REBOOT));then
+             if ! power "$id" reboot;then action "LXC $id" 'Reboot pendente non completato';BLOCKED[$id]=1;continue;fi
+         fi
+     fi
+     restore_guest "$id" "$initial" "$owned" || BLOCKED[$id]=1
+ done <<< "$pending"
+-unfinished=$(store unfinished "$RUN_ID") || exit 1
++unfinished=$(store unfinished "$RUN_ID" "$SCOPE") || exit 1
+ while IFS= read -r owner;do [[ -n "$owner" ]] || continue;store event "$owner" FAIL orchestratore 'Run interrotto; recupero nel report successivo';store finish "$owner" >/dev/null || exit 1;done <<< "$unfinished"
+-oldnodes=$(store nodes) || exit 1
++oldnodes=''
++if [[ "$SCOPE" == proxmox ]];then oldnodes=$(store nodes) || exit 1;fi
+ while IFS='|' read -r owner ip;do
+     [[ -n "$owner" ]] || continue
+     if ping -c 2 -W 2 "$ip" >/dev/null 2>&1 || remote ssh "root@$ip" true >/dev/null 2>&1;then action nodo2 'Nodo acceso dopo job interrotto: lasciato acceso per verifica manuale';fi
+     store node "$owner" "$ip" manual || exit 1
+ done <<< "$oldnodes"
+ node_ready=0;node_owned=0
++if [[ "$SCOPE" == proxmox && "$UPDATE_NODE2" == 1 && -z "$NODE2_IP" ]];then
++    event FAIL nodo2 'NODE2_IP mancante: nessun contatto o WOL';UPDATE_NODE2=0
++fi
+ if [[ "$SCOPE" == proxmox && "$UPDATE_NODE2" == 1 ]];then
+     if node_online "$NODE2_IP";then event NOTE nodo2 'Gia acceso: non verra spento'
+     elif store node "$RUN_ID" "$NODE2_IP" wol-intent && [[ -n "$NODE2_MAC" ]] && wakeonlan -i "$NODE2_WOL_BROADCAST" "$NODE2_MAC" >>"$LOG" 2>&1;then node_owned=1;store node "$RUN_ID" "$NODE2_IP" owned || exit 1;event NOTE nodo2 'WOL inviato dopo ping/SSH negativi'
+@@ -249,9 +293,9 @@
+                 remote ssh "root@$NODE2_IP" python3 "$DIR/guard.py" shutdown "$RUN_ID" >>"$LOG" 2>&1 || true
+                 off=0
+                 for ((i=0;i<24;i++));do if ! ping -c 2 -W 2 "$NODE2_IP" >/dev/null 2>&1 && ! remote ssh "root@$NODE2_IP" true >/dev/null 2>&1;then off=1;break;fi;sleep 5;done
+-                if ((off));then store node "$RUN_ID" "$NODE2_IP" closed || exit 1;else action nodo2 'Ancora acceso dopo richiesta shutdown';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
++                if ((off));then store node "$RUN_ID" "$NODE2_IP" closed || exit 1;event NOTE nodo2 "Aggiornato e spento dopo WOL";else action nodo2 'Ancora acceso dopo richiesta shutdown';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
+             elif ((node_owned));then store node "$RUN_ID" "$NODE2_IP" closed || exit 1;event NOTE nodo2 'Lasciato acceso come configurato';fi
+-        else action nodo2 'Update fallito; lasciato acceso';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
++        else action nodo2 'Una fase del worker e fallita (vedere errori precedenti); lasciato acceso';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
+     fi
+     for id in "${LXC_IDS[@]}";do update_lxc "$id";done
+     for target in "${VM_SSH_TARGETS[@]}";do if deploy ssh "$target";then worker vm "$target" full || true;else event FAIL vm 'Deploy fallito';fi;done
+--- reviewed-4.0/docker-maint.py
++++ proxmox-maintenance/docker-maint.py
+@@ -9,7 +9,10 @@
+     FAIL+=level=='FAIL';print(level+'|'+msg.replace('\n',' / '),flush=True)
+ def docker(*args,cwd=None,env=None):
+     p=subprocess.run(['docker',*args],cwd=cwd,env=env,capture_output=True,text=True)
+-    if p.returncode:raise RuntimeError('Docker '+args[0]+' rc='+str(p.returncode))
++    if p.returncode:
++        # Private local log only; never serialize the Compose config/environment.
++        for line in p.stderr.splitlines()[-25:]:print('DEBUG|Docker '+args[0]+': '+line,flush=True)
++        raise RuntimeError('Docker '+args[0]+' rc='+str(p.returncode)+'; dettagli nel log host')
+     return p.stdout+p.stderr if args[0]=='run' else p.stdout
+ 
+ def inspect(cid,key):return json.loads(docker('inspect','--format','{{json '+key+'}}',cid))
+@@ -123,10 +126,12 @@
+     if not check:
+         if any('paperless-ngx/paperless-ngx' in v.get('image','') for v in model['services'].values()):
+             q=subprocess.run([sys.executable,str(pathlib.Path(__file__).with_name('guard.py')),'app-idle'],capture_output=True)
+-            if q.returncode:raise RuntimeError('Import Paperless attivo: progetto rinviato')
++            if q.returncode:raise RuntimeError('Paperless rinviato: import inattivo/coordinamento timer non confermati')
+         policy=override(model,name,wd)
+         if policy:args+=['-f',policy]
+-        for step in (['config','--quiet'],['pull','--ignore-buildable',*chosen],['build','--pull','--no-cache',*chosen],['up','-d','--wait','--wait-timeout',os.environ.get('COMPOSE_WAIT_SECONDS','240'),*chosen]):docker(*args,*step,cwd=wd,env=env)
++        for step in (['config','--quiet'],['pull','--ignore-buildable',*chosen],['build','--pull','--no-cache',*chosen],['up','-d','--wait','--wait-timeout',os.environ.get('COMPOSE_WAIT_SECONDS','240'),*chosen]):
++            emit('NOTE',name+': Compose '+step[0]+' in corso')
++            docker(*args,*step,cwd=wd,env=env)
+     after=[r for r in inventory() if r['labels'].get('com.docker.compose.project')==name and r['labels'].get('com.docker.compose.project.working_dir')==wd]
+     present={r['labels'].get('com.docker.compose.service') for r in after if r['running']}
+     if set(chosen)-present:emit('FAIL',name+': servizi mancanti '+','.join(sorted(set(chosen)-present)))
+--- reviewed-4.0/guard.py
++++ proxmox-maintenance/guard.py
+@@ -17,25 +17,34 @@
+     if state['boot']==boot():
+         for u,v in state['units'].items():
+             if v['mask'] and cmd('systemctl','unmask','--runtime',u).returncode:raise RuntimeError('unmask '+u)
++        # Restore ALL dependencies before starting any timer.
++        for u,v in state['units'].items():
+             if u.endswith('.timer') and v['active'] and cmd('systemctl','start',u).returncode:raise RuntimeError('restore '+u)
+     p.unlink()
+ def prepare(run):
++    # APT owns its locks. Only pause the known Paperless scheduling timer.
+     p=ROOT/'quarantine.json'
+     if p.exists():
+-        s=json.loads(p.read_text())
+-        if s['boot']==boot() and s.get('complete'):return
+-        restore()
+-    s={'boot':boot(),'run':run,'units':{},'complete':False}
++        old=json.loads(p.read_text())
++        if old.get('strategy')=='timer-stop' and old['boot']==boot() and old.get('complete'):
++            app_idle();return
++        restore()  # Repairs legacy masks in two passes before new work.
++    s={'boot':boot(),'run':run,'units':{},'complete':False,'strategy':'timer-stop'}
+     if pathlib.Path('/run/systemd/system').exists():
+-        for u in UNITS:
+-            q=cmd('systemctl','show',u,'-p','LoadState','--value')
+-            if q.returncode:raise RuntimeError('unit state unknown '+u)
+-            if q.stdout.strip()=='not-found':continue
+-            s['units'][u]={'mask':cmd('systemctl','is-enabled',u).stdout.strip() not in ('masked','masked-runtime'),'active':cmd('systemctl','is-active',u).stdout.strip()=='active'}
+-            save(p,s)
+-            if s['units'][u]['mask'] and cmd('systemctl','mask','--runtime',u).returncode:raise RuntimeError('mask '+u)
+-            if cmd('systemctl','show',u,'-p','LoadState','--value').stdout.strip()!='masked':raise RuntimeError('mask not effective '+u)
+-            if u.endswith('.timer') and s['units'][u]['active'] and cmd('systemctl','stop',u).returncode:raise RuntimeError('timer stop '+u)
++        u='paperless-import.timer'
++        q=cmd('systemctl','show',u,'-p','LoadState','--value')
++        if q.returncode:raise RuntimeError('timer state unknown '+u)
++        if q.stdout.strip()!='not-found':
++            q=cmd('systemctl','show',u,'-p','ActiveState','--value')
++            if q.returncode:raise RuntimeError('timer activity unknown '+u)
++            active=q.stdout.strip() in ('active','activating','reloading')
++            s['units'][u]={'mask':False,'active':active}
++            save(p,s)  # Save original state BEFORE stopping, for crash recovery.
++            if active and cmd('systemctl','stop',u).returncode:raise RuntimeError('timer stop '+u)
++            q=cmd('systemctl','show',u,'-p','ActiveState','--value')
++            if q.returncode or q.stdout.strip() not in ('inactive','failed'):raise RuntimeError('timer still active '+u)
++    # Never stop a service that is importing. Report failure and let it finish.
++    app_idle()
+     s['complete']=True;save(p,s)
+ def app_idle():
+     if not pathlib.Path('/run/systemd/system').exists():return
+@@ -53,6 +62,12 @@
+         yield
+     finally:
+         for fd in fds:os.close(fd)
++def restore_worker():
++    # fd8 is inherited from the worker; do not reopen/relock a different fd.
++    fdstat=os.fstat(8);pathstat=(ROOT/'worker.lock').stat()
++    if (fdstat.st_dev,fdstat.st_ino)!=(pathstat.st_dev,pathstat.st_ino):raise RuntimeError('worker lock mismatch')
++    fcntl.flock(8,fcntl.LOCK_EX|fcntl.LOCK_NB)
++    restore()
+ def main():
+     os.umask(0o077)
+     if ROOT.is_symlink():raise RuntimeError('state symlink')
+@@ -60,7 +75,13 @@
+     if ROOT.stat().st_uid!=0 or ROOT.stat().st_mode&0o022:raise RuntimeError('state permissions')
+     mode=sys.argv[1];run=sys.argv[2] if len(sys.argv)>2 else ''
+     if mode=='prepare':prepare(run);return
+-    if mode=='restore':restore();return
++    if mode=='restore-worker':
++        restore_worker();return
++    if mode=='restore':
++        with open(ROOT/'worker.lock','a') as lock:
++            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
++            restore()
++        return
+     if mode=='app-idle':
+         state=json.loads((ROOT/'quarantine.json').read_text())
+         if state.get('boot')!=boot() or not state.get('complete'):raise RuntimeError('timer coordination incomplete')
+--- reviewed-4.0/install.sh
++++ proxmox-maintenance/install.sh
+@@ -13,17 +13,32 @@
+ PY
+ config=/etc/update-guests.conf
+ [[ -f "$config" && ! -L "$config" && $(stat -c %u "$config") == 0 && -z $(find "$config" -perm /022 -print) ]] || { echo 'Configurazione mancante/non privata';exit 2; }
++bash -n "$config"
++for bin in python3 pct ssh ping flock tar base64 curl findmnt tee sha256sum;do
++    command -v "$bin" >/dev/null || { echo "Dipendenza mancante: $bin";exit 2; }
++done
+ scan=()
+ [[ ! -L /usr/local/libexec/pve-maintenance-current ]] || scan+=(--allow-managed)
+-python3 "$HERE/audit-schedulers.py" "${scan[@]}"
++scan_rc=0
++python3 "$HERE/audit-schedulers.py" "${scan[@]}" || scan_rc=$?
++if ((scan_rc));then
++    if [[ "$MODE" == --enable-cron ]];then echo 'Cron non attivato: risolvere prima i conflitti/segnalazioni scanner';exit 2;fi
++    echo 'WARN scheduler: installazione del codice consentita; cron da verificare prima dell attivazione'
++fi
++if [[ "$MODE" == --enable-cron ]];then
++    zone=$(timedatectl show -p Timezone --value)
++    [[ "$zone" == Europe/Zurich || "$zone" == Europe/Rome ]] || { echo 'Fuso non previsto';exit 2; }
++    bash -c 'source "$1";[[ ${DRY_RUN:-0} == 0 && ${SEND_TELEGRAM:-0} == 1 && -n ${TELEGRAM_BOT_TOKEN:-} && -n ${TELEGRAM_CHAT_ID:-} ]]' bash "$config"
++fi
+ if [[ "$MODE" == --check ]];then echo 'Preflight completato: nessuna modifica';exit;fi
+ [[ ! -L /var/lock/update-guests.lock ]] || exit 2
+ exec 9>/var/lock/update-guests.lock
+ flock -w 60 9 || exit 75
+ backup=/var/backups/pve-maintenance-$(date -u +%Y%m%d-%H%M%S)-$$
+ install -d -m0700 "$backup"
+-for f in "$config" /usr/local/sbin/update-proxmox-guests.sh /usr/local/sbin/update-web.sh /etc/cron.d/pve-maintenance /etc/logrotate.d/pve-maintenance;do [[ ! -e "$f" ]] || cp -p "$f" "$backup/${f//\//_}";done
++for f in "$config" /usr/local/sbin/update-proxmox-guests.sh /usr/local/sbin/update-web.sh /usr/local/sbin/maintenance-recover.sh /etc/cron.d/pve-maintenance /etc/logrotate.d/pve-maintenance;do [[ ! -e "$f" ]] || cp -p "$f" "$backup/${f//\//_}";done
+ [[ ! -L /usr/local/libexec/pve-maintenance-current ]] || readlink /usr/local/libexec/pve-maintenance-current >"$backup/previous-release"
++if [[ -d /usr/local/libexec/pve-maintenance && ! -L /usr/local/libexec/pve-maintenance ]];then cp -a /usr/local/libexec/pve-maintenance "$backup/legacy-libexec";fi
+ if [[ -d /usr/local/lib/pve-maintenance && ! -L /usr/local/lib/pve-maintenance ]];then cp -a /usr/local/lib/pve-maintenance "$backup/legacy-lib";fi
+ release_id=$(cat "$HERE"/*.py "$HERE"/*.sh | sha256sum | cut -c1-20)
+ release=/usr/local/libexec/pve-maintenance-releases/$release_id
+@@ -31,7 +46,7 @@
+ install -d -m0750 "$release"
+ for f in "$HERE"/*.sh "$HERE"/*.py "$HERE"/*.md;do install -m0750 -o root -g root "$f" "$release/";done
+ install -d -m0755 /usr/local/sbin
+-for name in update-proxmox-guests.sh update-web.sh;do
++for name in update-proxmox-guests.sh update-web.sh maintenance-recover.sh;do
+     tmp=$(mktemp /usr/local/sbin/.pve-wrapper.XXXXXX)
+     cat >"$tmp" <<'WRAP'
+ #!/usr/bin/env bash
+@@ -46,9 +61,7 @@
+ for log in /var/log/pve-maintenance.log /var/log/update-guests-cron.log /var/log/update-web-cron.log;do [[ ! -L "$log" ]] || exit 2;touch "$log";chown root:root "$log";chmod 0600 "$log";done
+ install -m0644 "$HERE/pve-maintenance.logrotate" /etc/logrotate.d/pve-maintenance
+ if [[ "$MODE" == --enable-cron ]];then
+-    zone=$(timedatectl show -p Timezone --value)
+-    [[ "$zone" == Europe/Zurich || "$zone" == Europe/Rome ]] || { echo 'Fuso non previsto';exit 2; }
+-    bash -c 'source "$1";[[ ${DRY_RUN:-0} == 0 && ${SEND_TELEGRAM:-0} == 1 && -n ${TELEGRAM_BOT_TOKEN:-} && -n ${TELEGRAM_CHAT_ID:-} ]]' bash "$config"
+     tmp=$(mktemp /etc/cron.d/.pve-cron.XXXXXX);install -m0644 "$HERE/pve-maintenance.cron" "$tmp";mv "$tmp" /etc/cron.d/pve-maintenance
+ fi
++echo 'Per riparare i timer della versione precedente: maintenance-recover.sh (nessun update o spegnimento)'
+ printf 'Installato %s; backup %s. Nessun updater eseguito.\n' "$release" "$backup"
+--- /dev/null
++++ proxmox-maintenance/maintenance-recover.sh
+@@ -0,0 +1,53 @@
++#!/usr/bin/env bash
++# Repair only timer state recorded by this updater. No APT/Docker/WOL/power actions.
++set -uo pipefail
++umask 077
++export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
++LIB=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
++CONFIG=/etc/update-guests.conf
++((EUID==0)) || exit 2
++[[ -f "$CONFIG" && ! -L "$CONFIG" && $(stat -c %u "$CONFIG") == 0 && -z $(find "$CONFIG" -perm /022 -print) ]] || exit 2
++source "$CONFIG"
++export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
++declare -p SSH_OPTS >/dev/null 2>&1 || SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
++declare -p VM_SSH_TARGETS >/dev/null 2>&1 || VM_SSH_TARGETS=()
++[[ ! -L /var/lock/update-guests.lock ]] || exit 2
++exec 9>/var/lock/update-guests.lock
++flock -n 9 || { echo 'Un job e ancora in corso: recupero rinviato, nessun processo interrotto';exit 75; }
++payload=$(base64 -w0 "$LIB/guard.py") || exit 1
++code="import base64;exec(compile(base64.b64decode('$payload'),'<maintenance-guard>','exec'))"
++failed=0
++repair_host(){
++    if [[ -f /var/lib/proxmox-maintenance/quarantine.json ]];then
++        python3 "$LIB/guard.py" restore && echo 'host: timer ripristinati' || { echo 'FAIL host: recupero timer';failed=1; }
++    else echo 'host: nessun timer da recuperare';fi
++}
++repair_ssh(){
++    local target=$1 command rc=0
++    # Exact argument quoting; no config/credential contents emitted.
++    printf -v command 'test ! -f /var/lib/proxmox-maintenance/quarantine.json || python3 -c %q restore' "$code"
++    ssh -n "${SSH_OPTS[@]}" "$target" "$command" || rc=$?
++    if ((rc));then echo "FAIL $target: recupero non confermato (SSH/worker/timer)";failed=1
++    else echo "$target: controllo/ripristino timer completato";fi
++}
++repair_host
++rows=$(pct list) || exit 1
++while read -r id status _;do
++    [[ "$id" =~ ^[0-9]+$ ]] || continue
++    if [[ "$status" != running ]];then echo "LXC $id: spento, non avviato";continue;fi
++    if pct exec "$id" -- test -f /var/lib/proxmox-maintenance/quarantine.json;then
++        pct exec "$id" -- python3 -c "$code" restore && echo "LXC $id: timer ripristinati" || { echo "FAIL LXC $id: recupero timer";failed=1; }
++    else
++        # Distinguish an absent file from an inaccessible guest.
++        pct exec "$id" -- true || { echo "FAIL LXC $id: non accessibile";failed=1;continue; }
++        echo "LXC $id: nessun timer da recuperare"
++    fi
++done <<< "$rows"
++if [[ ${UPDATE_NODE2:-0} == 1 && -n ${NODE2_IP:-} ]];then
++    if ssh -n "${SSH_OPTS[@]}" "root@$NODE2_IP" true >/dev/null 2>&1;then repair_ssh "root@$NODE2_IP"
++    elif ping -c 2 -W 2 "$NODE2_IP" >/dev/null 2>&1;then echo 'FAIL nodo2 acceso ma SSH indisponibile';failed=1
++    else echo 'nodo2 non raggiungibile: nessun WOL, verifica al prossimo avvio';fi
++fi
++for target in "${VM_SSH_TARGETS[@]}";do repair_ssh "$target";done
++echo 'Recupero concluso: nessun update, reboot o spegnimento. I journal dei guest restano per il recupero del loro stato iniziale.'
++exit "$failed"
+--- reviewed-4.0/pve-guest-worker.sh
++++ proxmox-maintenance/pve-guest-worker.sh
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env bash
+-# PVE Maintenance 4.0 - worker Linux / Docker / Hermes
++# PVE Maintenance 4.1 - worker Linux / Docker / Hermes
+ # Eseguito soltanto dal coordinatore, su host / LXC / nodo2 / VM SSH.
+ set -uo pipefail
+ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+@@ -63,27 +63,37 @@
+     fi
+     # Non eseguire full-upgrade se l'aggiornamento indici fallisce: proseguire con altre fasi.
+     local rc=0
+-    if command -v timeout >/dev/null 2>&1; then
+-        timeout --kill-after=60s "${APT_TIMEOUT}s" apt-get -o APT::Update::Error-Mode=any update >"$WORK/apt-update.log" 2>&1 || rc=$?
+-    else
+-        apt-get -o APT::Update::Error-Mode=any update >"$WORK/apt-update.log" 2>&1 || rc=$?
+-    fi
++    note "APT: aggiornamento indici in corso"
++    local attempt
++    for ((attempt=0;attempt<=30;attempt++));do
++        rc=0
++        if command -v timeout >/dev/null 2>&1; then
++            LC_ALL=C timeout --kill-after=60s "${APT_TIMEOUT}s" apt-get -o APT::Update::Error-Mode=any update 2>&1 | tee "$WORK/apt-update.log" || rc=$?
++        else
++            LC_ALL=C apt-get -o APT::Update::Error-Mode=any update 2>&1 | tee "$WORK/apt-update.log" || rc=$?
++        fi
++        if ((rc==100 && attempt<30)) && grep -Eq 'Could not get lock|Unable to lock directory' "$WORK/apt-update.log";then
++            note 'APT: lock indici occupato, nuovo tentativo tra 10 secondi'
++            sleep 10
++        else break;fi
++    done
+     if ((rc)); then
+         fail "apt-get update (rc=$rc); full-upgrade saltato per non usare indici obsoleti"
+-        tail -n 25 "$WORK/apt-update.log"
++
+     else
+         note "OK: apt-get update"
+         local up_rc=0
+         # Non uccidere mai dpkg a meta transazione: niente timeout per full-upgrade.
+-        apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+-            full-upgrade >"$WORK/apt-upgrade.log" 2>&1 || up_rc=$?
+-        tail -n 35 "$WORK/apt-upgrade.log"
++        note "APT: full-upgrade in corso (attesa lock fino a 300 secondi)"
++        apt-get -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
++            full-upgrade 2>&1 | tee "$WORK/apt-upgrade.log" || up_rc=$?
++
+         if ((up_rc)); then
+             fail "apt-get full-upgrade (rc=$up_rc)"
+         else
+             note "OK: apt-get full-upgrade"
+             local clean_rc=0
+-            apt-get -y autoremove --purge >"$WORK/apt-autoremove.log" 2>&1 || clean_rc=$?
++            apt-get -y -o DPkg::Lock::Timeout=300 autoremove --purge 2>&1 | tee "$WORK/apt-autoremove.log" || clean_rc=$?
+             if ((clean_rc)); then warn "apt autoremove non completato (rc=$clean_rc)"; fi
+         fi
+     fi
+@@ -141,7 +151,7 @@
+     local rc=0 line
+     local -a args=()
+     [[ "$MODE" != health ]] || args+=(--health)
+-    python3 "$LIB/docker-maint.py" "${args[@]}" >"$WORK/docker.log" 2>&1 || rc=$?
++    python3 "$LIB/docker-maint.py" "${args[@]}" 2>&1 | tee "$WORK/docker.log" || rc=$?
+     while IFS= read -r line;do case "$line" in FAIL\|*) fail "${line#*|}";;WARN\|*) warn "${line#*|}";;NOTE\|*) note "${line#*|}";;*) printf '%s\n' "$line";;esac;done <"$WORK/docker.log"
+     ((rc==0)) || fail "Docker helper rc=$rc"
+     if [[ "$MODE" != health && "$DOCKER_PRUNE" == 1 ]] && ((FAILURES==0));then run_cmd 'Prune immagini create prima di 14 giorni, nessun volume' docker image prune -af --filter "until=$DOCKER_IMAGE_PRUNE_AGE";fi
+@@ -174,7 +184,7 @@
+     if [[ "$MODE" != docker ]];then if ((prepared));then apt_stage;else fail 'APT rinviato: coordinamento incompleto';fi;fi
+     if [[ "$GUEST_ID" == 1000 && "$KIND" == lxc ]];then hermes_stage
+     elif [[ "$MODE" != apt ]];then docker_phase;fi
+-    if [[ "$KIND" != lxc ]];then python3 "$LIB/guard.py" restore || fail 'Ripristino timer fallito';fi
++    if [[ "$KIND" != lxc ]];then python3 "$LIB/guard.py" restore-worker || fail 'Ripristino timer fallito';fi
+ fi
+ printf 'COMPLETE|failures=%d warnings=%d\n' "$FAILURES" "$WARNINGS" >>"$STATUS"
+ ((FAILURES==0))
+--- reviewed-4.0/pve-maintenance.cron
++++ proxmox-maintenance/pve-maintenance.cron
+@@ -1,4 +1,4 @@
+ # Fuso host Europe/Zurich o Europe/Rome. Lock globale e dedup giornaliera.
+ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+-30 3 * * * root /usr/local/sbin/update-web.sh >> /var/log/update-web-cron.log 2>&1
+-0 5 * * 1,3,5 root /usr/local/sbin/update-proxmox-guests.sh >> /var/log/update-guests-cron.log 2>&1
++30 3 * * * root /usr/local/sbin/update-web.sh --scheduled >> /var/log/update-web-cron.log 2>&1
++0 5 * * 1,3,5 root /usr/local/sbin/update-proxmox-guests.sh --scheduled >> /var/log/update-guests-cron.log 2>&1
+--- reviewed-4.0/state.py
++++ proxmox-maintenance/state.py
+@@ -57,6 +57,22 @@
+             for p in cached[10:]:p.unlink()
+             link=self.root/'latest.md';temp=self.root/'.latest.tmp';temp.unlink(missing_ok=True);temp.symlink_to('reports/'+cached[0].name);os.replace(temp,link)
+         return status,name
++    def summary(self,run):
++        groups={}
++        rank={'NOTE':0,'REBOOT':0,'WARN':1,'FAIL':2,'ACTION':3}
++        for level,target,msg in self.db.execute('SELECT level,target,msg FROM events WHERE run=?',(run,)):
++            target=target.strip()
++            if target not in groups or rank[level]>rank[groups[target][0]]:groups[target]=(level,msg)
++        counts=[sum(rank[v[0]]==0 for v in groups.values()),sum(rank[v[0]]>=2 for v in groups.values()),sum(rank[v[0]]==1 for v in groups.values())]
++        lines=[f'✅ OK {counts[0]} | ❌ FAIL {counts[1]} | WARN {counts[2]} (target)']
++        bad=sorted(((t,v) for t,v in groups.items() if rank[v[0]]>=2),key=lambda x:-rank[x[1][0]])
++        for target,(level,msg) in bad[:8]:lines.append(target[:48]+': '+('INTERVENTO: ' if level=='ACTION' else '')+msg.replace('\n',' ')[:100])
++        if len(bad)>8:lines.append(f'Altri {len(bad)-8} target con errori: vedere report.')
++        if counts[2]:lines.append('Dettagli WARN nel report completo.')
++        reboot=sorted({t.strip() for (t,) in self.db.execute("SELECT target FROM events WHERE run=? AND level='REBOOT'",(run,))})
++        if reboot:lines.append('Reboot richiesti/eseguiti (dettagli nel report): '+', '.join(reboot)[:160])
++        lines.append('Report completo su host/NAS; consegna NAS verificata separatamente.')
++        return '\n'.join(lines)
+     def archive(self,mount):
+         fd=os.open(self.root/'archive.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+         try:
+@@ -108,8 +124,9 @@
+     elif cmd=='pending':
+         for r in s.db.execute('SELECT * FROM guests'):print('|'.join(map(str,r)))
+     elif cmd=='unfinished':
+-        for (r,) in s.db.execute('SELECT id FROM runs WHERE finished=0 AND id!=?',a):print(r)
++        for (r,) in s.db.execute('SELECT id FROM runs WHERE finished=0 AND id!=? AND scope=?',a):print(r)
+     elif cmd=='finish':print('|'.join(s.finish(a[0])))
++    elif cmd=='summary':print(s.summary(a[0]))
+     elif cmd=='alert':
+         for level,target,msg in s.db.execute("SELECT level,target,msg FROM events WHERE run=? AND level!='NOTE' ORDER BY CASE level WHEN 'ACTION' THEN 0 WHEN 'FAIL' THEN 1 ELSE 2 END",a):print(level+' '+target+': '+msg)
+     elif cmd=='archive':s.archive(a[0])

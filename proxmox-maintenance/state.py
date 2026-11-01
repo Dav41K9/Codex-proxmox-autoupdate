@@ -57,6 +57,22 @@ CREATE TABLE IF NOT EXISTS archives(name TEXT PRIMARY KEY,sha TEXT,created REAL,
             for p in cached[10:]:p.unlink()
             link=self.root/'latest.md';temp=self.root/'.latest.tmp';temp.unlink(missing_ok=True);temp.symlink_to('reports/'+cached[0].name);os.replace(temp,link)
         return status,name
+    def summary(self,run):
+        groups={}
+        rank={'NOTE':0,'REBOOT':0,'WARN':1,'FAIL':2,'ACTION':3}
+        for level,target,msg in self.db.execute('SELECT level,target,msg FROM events WHERE run=?',(run,)):
+            target=target.strip()
+            if target not in groups or rank[level]>rank[groups[target][0]]:groups[target]=(level,msg)
+        counts=[sum(rank[v[0]]==0 for v in groups.values()),sum(rank[v[0]]>=2 for v in groups.values()),sum(rank[v[0]]==1 for v in groups.values())]
+        lines=[f'✅ OK {counts[0]} | ❌ FAIL {counts[1]} | WARN {counts[2]} (target)']
+        bad=sorted(((t,v) for t,v in groups.items() if rank[v[0]]>=2),key=lambda x:-rank[x[1][0]])
+        for target,(level,msg) in bad[:8]:lines.append(target[:48]+': '+('INTERVENTO: ' if level=='ACTION' else '')+msg.replace('\n',' ')[:100])
+        if len(bad)>8:lines.append(f'Altri {len(bad)-8} target con errori: vedere report.')
+        if counts[2]:lines.append('Dettagli WARN nel report completo.')
+        reboot=sorted({t.strip() for (t,) in self.db.execute("SELECT target FROM events WHERE run=? AND level='REBOOT'",(run,))})
+        if reboot:lines.append('Reboot richiesti/eseguiti (dettagli nel report): '+', '.join(reboot)[:160])
+        lines.append('Report completo su host/NAS; consegna NAS verificata separatamente.')
+        return '\n'.join(lines)
     def archive(self,mount):
         fd=os.open(self.root/'archive.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
         try:
@@ -108,8 +124,9 @@ def main():
     elif cmd=='pending':
         for r in s.db.execute('SELECT * FROM guests'):print('|'.join(map(str,r)))
     elif cmd=='unfinished':
-        for (r,) in s.db.execute('SELECT id FROM runs WHERE finished=0 AND id!=?',a):print(r)
+        for (r,) in s.db.execute('SELECT id FROM runs WHERE finished=0 AND id!=? AND scope=?',a):print(r)
     elif cmd=='finish':print('|'.join(s.finish(a[0])))
+    elif cmd=='summary':print(s.summary(a[0]))
     elif cmd=='alert':
         for level,target,msg in s.db.execute("SELECT level,target,msg FROM events WHERE run=? AND level!='NOTE' ORDER BY CASE level WHEN 'ACTION' THEN 0 WHEN 'FAIL' THEN 1 ELSE 2 END",a):print(level+' '+target+': '+msg)
     elif cmd=='archive':s.archive(a[0])

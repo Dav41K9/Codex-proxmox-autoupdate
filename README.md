@@ -1,13 +1,21 @@
-# Codex-proxmox
+# Codex-proxmox — manutenzione 4.1
 
-Ricostruzione verificabile del pacchetto di manutenzione Proxmox, 31 ottobre 2026.
+**[Scarica il pacchetto aggiornato 4.1](https://github.com/Dav41K9/Codex-proxmox/raw/refs/heads/main/dist/proxmox-maintenance-v4.1-reviewed.zip)**
 
-**[Scarica proxmox-maintenance-v4-reviewed.zip](https://github.com/Dav41K9/Codex-proxmox/raw/refs/heads/main/dist/proxmox-maintenance-v4-reviewed.zip)**
+[Guida breve](proxmox-maintenance/README-IT.md) · [Correzioni](proxmox-maintenance/CHANGELOG-4.1.md) · [Test e limiti](proxmox-maintenance/VALIDAZIONE-4.1.md) · [Risultati](tests/results.txt) · [SHA256](dist/SHA256SUMS)
 
-[Sorgenti e istruzioni](proxmox-maintenance/README-IT.md) · [Revisione e limiti](proxmox-maintenance/REVIEW-IT.md) · [Test](tests/results.txt) · [SHA256](dist/SHA256SUMS)
+Due job: generale e WordPress. Output a video, report completi, Telegram breve. La4.1 elimina i mask dei timer che avevano causato i guasti del collaudo e include la riparazione dei journal legacy. Nessuna configurazione reale o log privato è pubblicato.
 
-Il precedente ambiente e il suo ZIP non sono recuperabili: questa è una nuova ricostruzione dagli allegati originali e dalle decisioni della conversazione, non una copia bit per bit. Test locali con mock, nessuna esecuzione su Proxmox e nessun cron attivato. Non contiene la configurazione reale, credenziali, dossier privato o output del server.
+Installazione dal pacchetto estratto, come root sul nodo principale:
 
-Il pacchetto è una **candidata per prove live controllate**, non una certificazione per avvio unattended. La pubblicazione su GitHub conserva sorgenti, prove e archivio oltre la durata della sessione.
+```bash
+bash install.sh --check
+bash install.sh --install
+maintenance-recover.sh
+```
 
-Riproduzione test: `python3 -m unittest discover -s tests -v`.
+Leggere l'esito di ciascun comando. Il recupero non esegue aggiornamenti, WOL o spegnimenti. Poi collaudare `update-web.sh` e `update-proxmox-guests.sh` prima di abilitare cron. Non serve --retry per ripetere un lancio manuale. Il cron resta un passo esplicito: `bash install.sh --enable-cron`.
+
+La versione precedente è preservata nella storia Git; le patch in `fixes/` sono storiche e confluite nella4.1. La guida lunga del primo collaudo non va usata come procedura di installazione della nuova versione.
+
+Test riproducibili: `python3 -m unittest discover -s tests -v`. Nessuna esecuzione su Proxmox è stata effettuata dalla revisione.

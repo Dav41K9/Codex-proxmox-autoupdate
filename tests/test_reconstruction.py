@@ -48,6 +48,11 @@ class Ledger(Base):
         q=subprocess.CompletedProcess([],0,json.dumps({'filesystems':[{'target':str(mount),'fstype':'nfs4'}]}),'')
         with patch.object(store.subprocess,'run',return_value=q):self.assertRaises(ValueError,s.archive,mount)
         self.assertTrue((s.root/'outbox'/name).exists())
+    def test_summary_groups_counts_and_prioritizes_manual_action(self):
+        s=self.db()
+        for n in range(100):s.event('run','NOTE','host','OK step '+str(n))
+        s.event('run','FAIL','LXC 200','worker error');s.event('run','ACTION','LXC 200','Timer restore failed');s.event('run','WARN','LXC 101','no healthcheck')
+        msg=s.summary('run');self.assertIn('OK 1 | ❌ FAIL 1 | WARN 1',msg);self.assertIn('INTERVENTO',msg);self.assertNotIn('OK step',msg);self.assertLess(len(msg),700)
 class Locks(Base):
     def test_real_posix_package_lock_blocks_guard(self):
         p=self.p/'lock';q=subprocess.Popen([sys.executable,'-c','import fcntl,sys;f=open(sys.argv[1],"w");fcntl.lockf(f,fcntl.LOCK_EX);print("ready",flush=True);sys.stdin.read()',str(p)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
@@ -69,6 +74,19 @@ class Locks(Base):
     def test_after_reboot_old_masks_not_restored(self):
         (self.p/'quarantine.json').write_text(json.dumps({'boot':'old','units':{}}))
         with patch.object(guard,'ROOT',self.p),patch.object(guard,'cmd') as cmd:guard.restore();cmd.assert_not_called()
+    def test_unmask_dependencies_before_starting_any_timer(self):
+        state={'boot':guard.boot(),'units':{'apt-daily.timer':{'mask':True,'active':True},'apt-daily.service':{'mask':True,'active':False}}};(self.p/'quarantine.json').write_text(json.dumps(state));masked={'apt-daily.timer','apt-daily.service'};calls=[]
+        def cmd(*a):
+            calls.append(a)
+            if a[1]=='unmask':masked.discard(a[-1])
+            return subprocess.CompletedProcess(a,1 if a[1]=='start' and masked else 0,'','')
+        with patch.object(guard,'ROOT',self.p),patch.object(guard,'cmd',cmd):guard.restore()
+        self.assertFalse((self.p/'quarantine.json').exists());self.assertEqual(calls[-1],('systemctl','start','apt-daily.timer'))
+    def test_failed_unmask_does_not_start_timers_or_delete_journal(self):
+        state={'boot':guard.boot(),'units':{'apt-daily.timer':{'mask':True,'active':True},'apt-daily.service':{'mask':True,'active':False}}};(self.p/'quarantine.json').write_text(json.dumps(state));calls=[]
+        def cmd(*a):calls.append(a);return subprocess.CompletedProcess(a,1 if a[-1].endswith('.service') else 0,'','')
+        with patch.object(guard,'ROOT',self.p),patch.object(guard,'cmd',cmd):self.assertRaises(RuntimeError,guard.restore)
+        self.assertTrue((self.p/'quarantine.json').exists());self.assertFalse(any(a[1]=='start' for a in calls))
 class Compose(Base):
     def test_missing_override_blocks_project(self):
         f=self.p/'compose.yml';f.touch();self.assertRaises(ValueError,dm.command,'custom',str(self.p),((str(f),str(self.p/'missing')),()))
@@ -130,26 +148,29 @@ class Import(Base):
     def test_failed_write_retains_inbox(self):
         self.assertRaises(ValueError,self.exercise,None,True);self.assertTrue(list(self.p.glob('*.md')))
 class Worker(Base):
-    def run_worker(self,guest,mode,apt=0,hermes=0):
+    def run_worker(self,guest,mode,apt=0,hermes=0,lock_once=False):
         s=(SRC/'pve-guest-worker.sh').read_text().replace('/var/lib/proxmox-maintenance',str(self.p/'state')).replace('/var/tmp/',str(self.p)+'/').replace('/home/hermes/.local/bin/hermes',str(self.p/'hermes')).replace(' -o root -g root','').replace('== 0 && -z $(find','== "$EUID" && -z $(find')
         (self.p/'worker.sh').write_text(s);(self.p/'hermes').touch();(self.p/'hermes').chmod(0o700)
-        script=r'''apt-get(){ echo "APT $*" >>"$TRACE";return "$APT_RC"; }
+        script=r'''apt-get(){ echo "APT $*" >>"$TRACE";if [[ "$LOCK_ONCE" == 1 && "$*" == *update && ! -e "$FIX/lock-seen" ]];then touch "$FIX/lock-seen";echo 'Could not get lock /var/lib/apt/lists/lock';return 100;fi;return "$APT_RC"; }
+sleep(){ :; }
 timeout(){ shift 2;"$@"; }
 dpkg-query(){ printf 'libc6\t1\n'; }
 python3(){ echo "HELPER $*" >>"$TRACE";return 0; }
 docker(){ echo "DOCKER $*" >>"$TRACE";return 0; }
 su(){ echo HERMES_FINISHED >>"$TRACE";return "$HERMES_RC"; }
 id(){ [[ ${1:-} != hermes ]] || return 0;command id "$@"; }
-export -f apt-get timeout dpkg-query python3 docker su id
+export -f sleep apt-get timeout dpkg-query python3 docker su id
 bash "$FIX/worker.sh"
 '''
-        env=dict(os.environ,FIX=str(self.p),TRACE=str(self.p/'trace'),RUN_ID='test',KIND='lxc',GUEST_ID=guest,MODE=mode,APT_RC=str(apt),HERMES_RC=str(hermes))
+        env=dict(os.environ,FIX=str(self.p),TRACE=str(self.p/'trace'),RUN_ID='test',KIND='lxc',GUEST_ID=guest,MODE=mode,APT_RC=str(apt),HERMES_RC=str(hermes),LOCK_ONCE=str(int(lock_once)))
         q=subprocess.run(['bash','-c',script],capture_output=True,text=True,env=env,timeout=10)
         status=self.p/'state/worker-status/test.status';self.assertTrue(status.exists(),q.stderr);return q,(self.p/'trace').read_text(),status.read_text()
     def test_apt_fail_still_docker_and_nonzero(self):
         q,tr,s=self.run_worker('101','full',apt=100);self.assertEqual(q.returncode,1,q.stderr);self.assertIn('docker-maint.py',tr);self.assertNotIn('full-upgrade',tr);self.assertIn('COMPLETE|failures=',s)
     def test_hermes_failed_waited_reboot_zero_docker(self):
         q,tr,s=self.run_worker('1000','full',hermes=7);self.assertEqual(q.returncode,1,q.stderr);self.assertIn('HERMES_FINISHED',tr);self.assertNotIn('DOCKER',tr);self.assertNotIn('docker-maint',tr);self.assertIn('REBOOT|',s)
+    def test_apt_index_lock_is_retried_without_killing_a_transaction(self):
+        q,tr,s=self.run_worker('200','apt',lock_once=True);self.assertEqual(q.returncode,0,q.stderr);self.assertEqual(sum(line.startswith('APT ') and line.endswith(' update') for line in tr.splitlines()),2);self.assertIn('full-upgrade',tr)
     def test_night_no_apt(self):
         q,tr,s=self.run_worker('200','docker');self.assertEqual(q.returncode,0,q.stderr);self.assertNotIn('APT ',tr);self.assertIn('docker-maint.py',tr)
     def test_morning_no_docker_update(self):
@@ -174,7 +195,7 @@ class BashFlows(Base):
         out,tr=self.run_functions('pct(){ echo "PCT $*" >>"$FIX/trace";if [[ "$1" == listsnapshot ]];then for n in 01 02 03 04 05;do printf "pre-update-202610%s-000000\\npre-web-update-202610%s-000000\\n" "$n" "$n";done;fi; };snapshots cleanup 200;snapshots create 106')
         self.assertEqual(sum('PCT delsnapshot' in line for line in tr.splitlines()),5);self.assertNotIn('PCT snapshot 106',tr)
     def test_http_down_action(self):
-        out,tr=self.run_functions('WEB_HTTP_HOST=example.invalid;remote(){ echo 503; };web_health');self.assertIn('SITO DOWN',tr)
+        out,tr=self.run_functions('WEB_HTTP_HOST=example.invalid;remote(){ echo 503; };web_health');self.assertIn('Check homepage fallito',tr)
     def test_node_ping_only_is_online(self):
         out,tr=self.run_functions('ping(){ return 0; };remote(){ return 1; };if node_online example.invalid;then event NOTE node online;fi');self.assertIn('online',tr)
     def test_node_ssh_only_is_online(self):
@@ -184,7 +205,7 @@ class BashFlows(Base):
     def test_telegram_api_false_is_failure(self):
         out,tr=self.run_functions("SEND_TELEGRAM=1;NO_TELEGRAM=0;TELEGRAM_BOT_TOKEN=DUMMY;TELEGRAM_CHAT_ID=DUMMY;curl(){ echo '{\"ok\":false}'; };if telegram hello;then event FAIL test accepted;else event NOTE test rejected;fi");self.assertIn('rejected',tr)
     def test_telegram_unicode_chunks(self):
-        out,tr=self.run_functions("SEND_TELEGRAM=1;NO_TELEGRAM=0;TELEGRAM_BOT_TOKEN=DUMMY;TELEGRAM_CHAT_ID=DUMMY;curl(){ echo CALLED >>\"$FIX/trace\";echo '{\"ok\":true}'; };msg=$(python3 -c 'print(\"è\"*1401)');telegram \"$msg\";event NOTE test end");self.assertEqual(tr.count('CALLED'),3)
+        out,tr=self.run_functions("SEND_TELEGRAM=1;NO_TELEGRAM=0;TELEGRAM_BOT_TOKEN=DUMMY;TELEGRAM_CHAT_ID=DUMMY;curl(){ echo CALLED >>\"$FIX/trace\";echo '{\"ok\":true}'; };msg=$(python3 -c 'print(\"è\"*3601)');telegram \"$msg\";event NOTE test end");self.assertEqual(tr.count('CALLED'),3)
 class Agent(Base):
     def exercise(self,failure=None):
         import copy

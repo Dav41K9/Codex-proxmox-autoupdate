@@ -1,3 +1,5 @@
+> **Documento storico della ricostruzione4.0.** Per la4.1 usare README-IT.md, CHANGELOG-4.1.md e VALIDAZIONE-4.1.md. Le limitazioni e i meccanismi qui descritti non costituiscono la procedura corrente.
+
 # Revisione della ricostruzione
 
 ## A. Verdetto

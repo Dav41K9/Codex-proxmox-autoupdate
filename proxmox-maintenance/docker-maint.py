@@ -9,7 +9,10 @@ def emit(level,msg):
     FAIL+=level=='FAIL';print(level+'|'+msg.replace('\n',' / '),flush=True)
 def docker(*args,cwd=None,env=None):
     p=subprocess.run(['docker',*args],cwd=cwd,env=env,capture_output=True,text=True)
-    if p.returncode:raise RuntimeError('Docker '+args[0]+' rc='+str(p.returncode))
+    if p.returncode:
+        # Private local log only; never serialize the Compose config/environment.
+        for line in p.stderr.splitlines()[-25:]:print('DEBUG|Docker '+args[0]+': '+line,flush=True)
+        raise RuntimeError('Docker '+args[0]+' rc='+str(p.returncode)+'; dettagli nel log host')
     return p.stdout+p.stderr if args[0]=='run' else p.stdout
 
 def inspect(cid,key):return json.loads(docker('inspect','--format','{{json '+key+'}}',cid))
@@ -123,10 +126,12 @@ def project(name,wd,p,check=False):
     if not check:
         if any('paperless-ngx/paperless-ngx' in v.get('image','') for v in model['services'].values()):
             q=subprocess.run([sys.executable,str(pathlib.Path(__file__).with_name('guard.py')),'app-idle'],capture_output=True)
-            if q.returncode:raise RuntimeError('Import Paperless attivo: progetto rinviato')
+            if q.returncode:raise RuntimeError('Paperless rinviato: import inattivo/coordinamento timer non confermati')
         policy=override(model,name,wd)
         if policy:args+=['-f',policy]
-        for step in (['config','--quiet'],['pull','--ignore-buildable',*chosen],['build','--pull','--no-cache',*chosen],['up','-d','--wait','--wait-timeout',os.environ.get('COMPOSE_WAIT_SECONDS','240'),*chosen]):docker(*args,*step,cwd=wd,env=env)
+        for step in (['config','--quiet'],['pull','--ignore-buildable',*chosen],['build','--pull','--no-cache',*chosen],['up','-d','--wait','--wait-timeout',os.environ.get('COMPOSE_WAIT_SECONDS','240'),*chosen]):
+            emit('NOTE',name+': Compose '+step[0]+' in corso')
+            docker(*args,*step,cwd=wd,env=env)
     after=[r for r in inventory() if r['labels'].get('com.docker.compose.project')==name and r['labels'].get('com.docker.compose.project.working_dir')==wd]
     present={r['labels'].get('com.docker.compose.service') for r in after if r['running']}
     if set(chosen)-present:emit('FAIL',name+': servizi mancanti '+','.join(sorted(set(chosen)-present)))

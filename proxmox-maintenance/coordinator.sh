@@ -7,14 +7,14 @@ STATE=/var/lib/proxmox-maintenance
 CONFIG=/etc/update-guests.conf
 RUN_ID=$(date -u +%Y%m%d-%H%M%S)-$$
 SCOPE=${1:?scope};shift
-DRY=0;RETRY=0;NO_TELEGRAM=0;CLAIMED=0;FINAL=0
-for arg in "$@";do case "$arg" in --dry-run) DRY=1;;--retry) RETRY=1;;--no-telegram) NO_TELEGRAM=1;;*) exit 2;;esac;done
+DRY=0;RETRY=0;SCHEDULED=0;NO_TELEGRAM=0;CLAIMED=0;FINAL=0
+for arg in "$@";do case "$arg" in --dry-run) DRY=1;;--retry) RETRY=1;;--scheduled) SCHEDULED=1;;--no-telegram) NO_TELEGRAM=1;;*) exit 2;;esac;done
 ((EUID==0)) || exit 2
 [[ -f "$CONFIG" && ! -L "$CONFIG" && $(stat -c %u "$CONFIG") == 0 && -z $(find "$CONFIG" -perm /022 -print) ]] || { echo 'Configurazione mancante/non privata';exit 2; }
 # shellcheck disable=SC1090
 source "$CONFIG"
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-: "${UPDATE_HOST:=1}" "${UPDATE_NODE2:=0}" "${NODE2_IP:=10.99.0.2}" "${NODE2_MAC:=}" "${NODE2_WOL_BROADCAST:=10.99.0.15}"
+: "${UPDATE_HOST:=1}" "${UPDATE_NODE2:=0}" "${NODE2_IP:=}" "${NODE2_MAC:=}" "${NODE2_WOL_BROADCAST:=255.255.255.255}"
 : "${NODE2_STOP_AFTER:=1}" "${START_STOPPED_LXC:=1}" "${STOP_LXC_STARTED_BY_SCRIPT:=1}" "${CREATE_SNAPSHOTS:=1}"
 : "${WEB_COMPOSE_DIR:=/home/3dft/3dft-wordpress}" "${WEB_HTTP_HOST:=3dfactoryticino.ch}" "${NAS_MOUNT:=/mnt/pve/NAS}"
 : "${SEND_TELEGRAM:=0}" "${COMPOSE_WAIT_SECONDS:=240}" "${APT_TIMEOUT:=3600}" "${DOCKER_PRUNE:=1}" "${STANDALONE_MODE:=watchtower}"
@@ -31,13 +31,13 @@ for id in "${LXC_IDS[@]}";do [[ "$id" =~ ^[0-9]+$ ]] || exit 2;done
 if ((DRY)) || [[ ${DRY_RUN:-0} == 1 ]];then echo "DRY RUN $SCOPE: nessuna modifica; snapshot200=2+3; NAS=60giorni; Hermes import rinviato";exit 0;fi
 LOG=/var/log/pve-maintenance.log
 store(){ python3 "$LIB/state.py" "$STATE" "$@"; }
-event(){ store event "$RUN_ID" "$1" "$2" "$3" || exit 1;printf '%s %s %s\n' "$1" "$2" "$3" >>"$LOG"; }
-action(){ event ACTION "$1" "$2 — INTERVENTO MANUALE RICHIESTO"; }
+event(){ store event "$RUN_ID" "$1" "$2" "$3" || exit 1;printf '%s %s %s\n' "$1" "$2" "$3" | tee -a "$LOG"; }
+action(){ event ACTION "$1" "$2 - INTERVENTO MANUALE RICHIESTO"; }
 telegram(){
     [[ "$SEND_TELEGRAM" == 1 && "$NO_TELEGRAM" == 0 ]] || return 0
     [[ -n ${TELEGRAM_BOT_TOKEN:-} && -n ${TELEGRAM_CHAT_ID:-} ]] || return 1
     local chunks chunk encoded response
-    chunks=$(printf '%s' "$1" | python3 -c 'import sys,base64;s=sys.stdin.read();print("\n".join(base64.b64encode(s[i:i+700].encode()).decode() for i in range(0,len(s),700)))') || return 1
+    chunks=$(printf '%s' "$1" | python3 -c 'import sys,base64;s=sys.stdin.read();print("\n".join(base64.b64encode(s[i:i+1800].encode()).decode() for i in range(0,len(s),1800)))') || return 1
     while IFS= read -r encoded;do
         [[ -n "$encoded" ]] || continue
         chunk=$(printf '%s' "$encoded" | base64 -d && printf '.');chunk=${chunk%.}
@@ -49,7 +49,7 @@ state(){ local s;s=$(pct status "$1" 2>/dev/null) || s=unknown;case "$s" in 'sta
 remote(){ local kind=$1 target=$2;shift 2;case "$kind" in lxc) pct exec "$target" -- "$@";;host) "$@";;*) local cmd;printf -v cmd '%q ' "$@";ssh -n "${SSH_OPTS[@]}" "$target" "$cmd";;esac; }
 node_online(){ ping -c 2 -W 2 "$1" >/dev/null 2>&1 || remote ssh "root@$1" true >/dev/null 2>&1; }
 parse(){
-    local target=$1 data=$2 expected=${3:-$RUN_ID} line type msg runs=0 complete=0 failures=0 warnings=0 valid=1
+    local target=$1 data=$2 expected=${3:-$RUN_ID} historical=${4:-0} line type msg runs=0 complete=0 failures=0 warnings=0 valid=1
     STATUS_COMPLETE=0;STATUS_REBOOT=0;STATUS_FAIL=0
     while IFS= read -r line;do
         [[ -n "$line" ]] || continue
@@ -58,15 +58,15 @@ parse(){
         case "$type" in
           RUN) runs=$((runs+1));[[ "$msg" == "$expected" ]] || valid=0;;
           COMPLETE) complete=$((complete+1));[[ "$msg" == "failures=$failures warnings=$warnings" ]] || valid=0;;
-          FAIL) failures=$((failures+1));event FAIL "$target" "$msg";;
-          WARN) warnings=$((warnings+1));event WARN "$target" "$msg";;
-          NOTE) event NOTE "$target" "$msg";;
-          REBOOT) STATUS_REBOOT=1;event REBOOT "$target" "$msg";;
-          REBOOT_ADVICE) event REBOOT "$target" "$msg (host/VM: nessun reboot automatico)";;
+          FAIL) failures=$((failures+1));((historical)) || event FAIL "$target" "$msg";;
+          WARN) warnings=$((warnings+1));((historical)) || event WARN "$target" "$msg";;
+          NOTE) ((historical)) || event NOTE "$target" "$msg";;
+          REBOOT) STATUS_REBOOT=1;((historical)) || event REBOOT "$target" "$msg";;
+          REBOOT_ADVICE) ((historical)) || event REBOOT "$target" "$msg (host/VM: nessun reboot automatico)";;
           *) valid=0;;
         esac
     done <<< "$data"
-    if ((runs==1 && complete==1 && valid));then STATUS_COMPLETE=1;else event FAIL "$target" 'Status incompleto/non valido';fi
+    if ((runs==1 && complete==1 && valid));then STATUS_COMPLETE=1;elif ((historical));then event WARN "$target" 'Run precedente incompleto: recupero stato, non ripetizione degli aggiornamenti';else event FAIL "$target" 'Status incompleto/non valido';fi
     ((STATUS_COMPLETE && failures==0)) || STATUS_FAIL=1
 }
 deploy(){
@@ -81,11 +81,21 @@ worker(){
     if [[ "$kind" == lxc ]];then dirs=${LXC_COMPOSE_DIRS[$id]:-};[[ "$id" != 200 ]] || dirs=$WEB_COMPOSE_DIR;fi
     encoded=$(printf '%s' "$dirs" | python3 -c 'import sys,shlex,base64;s=sys.stdin.read();v=s.splitlines() if "\n" in s else shlex.split(s);print(base64.b64encode("\n".join(v).encode()).decode())') || return 1
     printf -v envline 'RUN_ID=%q KIND=%q GUEST_ID=%q MODE=%q COMPOSE_DIRS_B64=%q WEB_COMPOSE_DIR=%q APT_TIMEOUT=%q COMPOSE_WAIT_SECONDS=%q DOCKER_PRUNE=%q STANDALONE_MODE=%q SKIP_DOCKER=%q bash %q' "$worker_run" "$kind" "$id" "$mode" "$encoded" "$WEB_COMPOSE_DIR" "$APT_TIMEOUT" "$COMPOSE_WAIT_SECONDS" "$DOCKER_PRUNE" "$STANDALONE_MODE" "$skip" "$DIR/pve-guest-worker.sh"
-    remote "$kind" "$id" bash -c "$envline </dev/null" >>"$LOG" 2>&1 || rc=$?
+    event NOTE "$kind $id" "Avvio fase $mode; attendo il completamento"
+    remote "$kind" "$id" bash -c "$envline </dev/null" 2>&1 | tee -a "$LOG" || rc=$?
     local data;data=$(remote "$kind" "$id" cat "$STATE/worker-status/$worker_run.status" 2>/dev/null) || data=''
     parse "$kind $id" "$data" "$worker_run"
     ((rc==0)) || event FAIL "$kind $id" "Worker rc=$rc"
     ((rc==0 && STATUS_COMPLETE && !STATUS_FAIL))
+}
+wait_guest(){
+    local id=$1 boot_state attempt
+    for ((attempt=0;attempt<40;attempt++));do
+        boot_state=$(remote lxc "$id" systemctl is-system-running 2>/dev/null) || true
+        case "$boot_state" in running|degraded) return 0;;esac
+        sleep 3
+    done
+    return 1
 }
 power(){
     local id=$1 mode=$2 token="$RUN_ID-$RANDOM" pid ready=0 before after result=0
@@ -101,7 +111,7 @@ power(){
             result=1
             for ((n=0;n<40;n++));do
                 after=$(remote lxc "$id" cat /proc/sys/kernel/random/boot_id 2>/dev/null) || after=''
-                if [[ -n "$after" && "$after" != "$before" ]];then result=0;break;fi;sleep 3
+                if [[ -n "$after" && "$after" != "$before" ]];then if wait_guest "$id";then result=0;fi;break;fi;sleep 3
             done
         elif [[ "$mode" == shutdown && $(state "$id") != stopped ]];then result=1;fi
     else result=1;fi
@@ -113,14 +123,25 @@ power(){
 restore_guest(){
     local id=$1 initial=$2 owned=$3
     if [[ $(state "$id") == stopped ]];then store close "$id";return;fi
-    if ! deploy lxc "$id" || ! remote lxc "$id" python3 "$DIR/guard.py" idle >/dev/null 2>&1;then action "LXC $id" 'Rimane acceso/non verificabile: transazione, worker o import attivo';return 1;fi
-    if [[ "$initial" == stopped && "$owned" != 1 ]];then action "LXC $id" 'Acceso ma ownership avvio incerta';return 1;fi
+    if ! deploy lxc "$id";then action "LXC $id" 'Stato non ripristinato: guest non accessibile';return 1;fi
+    if [[ "$initial" == stopped && "$owned" != 1 ]];then
+        remote lxc "$id" python3 "$DIR/guard.py" restore || true
+        action "LXC $id" 'Acceso ma ownership avvio incerta';return 1
+    fi
     if [[ "$initial" == stopped && "$STOP_LXC_STARTED_BY_SCRIPT" == 1 ]];then
-        power "$id" shutdown || { action "LXC $id" 'Rimane acceso: shutdown non confermato';return 1; }
+        if ! remote lxc "$id" python3 "$DIR/guard.py" idle >/dev/null 2>&1;then
+            remote lxc "$id" python3 "$DIR/guard.py" restore || true
+            action "LXC $id" 'Rimane acceso: transazione, worker o import attivo';return 1
+        fi
+        if ! power "$id" shutdown;then
+            remote lxc "$id" python3 "$DIR/guard.py" restore || true
+            action "LXC $id" 'Rimane acceso: shutdown non confermato';return 1
+        fi
     else remote lxc "$id" python3 "$DIR/guard.py" restore || { action "LXC $id" 'Ripristino timer fallito';return 1; };fi
     if [[ "$id" == 1000 && $(state "$id") == running ]];then remote lxc "$id" rm -f /var/lib/proxmox-maintenance-import/maintenance.active || return 1;fi
     store close "$id"
 }
+
 snapshots(){
     local op=$1 id=$2 prefix=pre-update raw name keep skipid
     for skipid in "${SNAPSHOT_SKIP_IDS[@]}";do [[ "$skipid" != "$id" ]] || return 0;done
@@ -148,8 +169,10 @@ update_lxc(){
     if [[ "$initial" == stopped ]];then
         if pct start "$id" >>"$LOG" 2>&1;then owned=1;store guest "$id" "$RUN_ID" "$initial" 1 started || exit 1
         else event FAIL "LXC $id" 'Start fallito';restore_guest "$id" "$initial" 0 || true;return;fi
+        if ! wait_guest "$id";then event FAIL "LXC $id" 'Avvio non pronto entro attesa';restore_guest "$id" "$initial" "$owned" || true;return;fi
     fi
     if ! deploy lxc "$id";then event FAIL "LXC $id" 'Deploy fallito';restore_guest "$id" "$initial" "$owned" || true;return;fi
+    event NOTE "LXC $id" "Inizio manutenzione; stato iniziale $initial"
     snapshots create "$id"
     [[ "$id" != 200 ]] || mode=apt
     [[ "$SCOPE" != wordpress ]] || mode=docker
@@ -166,18 +189,24 @@ update_lxc(){
     restore_guest "$id" "$initial" "$owned" || true
 }
 web_health(){
-    local code=000
+    local code=000 public=000 i
+    event NOTE WordPress 'Verifica homepage locale e HTTPS pubblico'
     for ((i=0;i<18;i++));do
-        code=$(remote lxc 200 curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 10 -H "Host: $WEB_HTTP_HOST" http://127.0.0.1:8080/wp-login.php 2>/dev/null) || code=000
-        [[ "$code" != 200 ]] || { event NOTE WordPress 'HTTP200 login; checkout non certificato';return; };sleep 5
+        code=$(remote lxc 200 curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 4 --max-time 10 -H "Host: $WEB_HTTP_HOST" http://127.0.0.1:8080/ 2>/dev/null) || code=000
+        if [[ "$code" == 200 ]];then
+            public=$(curl -sS -L --max-redirs 5 --proto '=https' --proto-redir '=https' --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' "https://$WEB_HTTP_HOST/" 2>/dev/null) || public=000
+            [[ "$public" != 200 ]] || { event NOTE WordPress 'Homepage locale200 e HTTPS pubblico200; checkout non certificato';return; }
+        fi
+        sleep 5
     done
-    action WordPress "SITO DOWN/non verificabile HTTP=$code"
+    action WordPress "Check homepage fallito: locale=$code pubblico=$public; disponibilita sito non confermata"
 }
+
 finish(){
     local result body pid done=0
     result=$(store finish "$RUN_ID") || return 1
     FINAL=1
-    body=$(store alert "$RUN_ID") || body='FAIL lettura riepilogo'
+    body=$(store summary "$RUN_ID") || body='FAIL lettura riepilogo'
     store archive "$NAS_MOUNT" 9>&- >"$STATE/archive.log" 2>&1 & pid=$!
     for ((i=0;i<45;i++));do kill -0 "$pid" 2>/dev/null || { done=1;break; };sleep 1;done
     if ((done)) && wait "$pid";then :;else
@@ -186,7 +215,9 @@ finish(){
         body+=$'\nWARN NAS non disponibile: report conservati in coda locale'
         printf '%s ARCHIVE_PENDING\n' "$RUN_ID" >>"$STATE/delivery.log"
     fi
-    telegram "[$SCOPE] $result"$'\n'"$body" || { printf '%s TELEGRAM_FAILED\n' "$RUN_ID" >>"$STATE/delivery.log";return 1; }
+    printf 'Report: %s/reports/%s\n' "$STATE" "${result#*|}"
+    telegram "[$SCOPE] ${result%%|*}"$'\n'"$body"$'\n'"Run: $RUN_ID" || { printf '%s TELEGRAM_FAILED\n' "$RUN_ID" >>"$STATE/delivery.log";echo 'FAIL invio Telegram; report conservato su host';return 1; }
+    printf 'FINE %s: %s (run %s)\n' "$SCOPE" "${result%%|*}" "$RUN_ID"
     [[ "$result" != FAIL\|* ]]
 }
 on_exit(){
@@ -204,36 +235,49 @@ on_exit(){
 for bin in python3 pct ssh ping flock tar base64 curl findmnt;do command -v "$bin" >/dev/null || exit 2;done
 [[ ! -L /var/lock/update-guests.lock ]] || exit 2
 exec 9>/var/lock/update-guests.lock
-flock -w 21600 9 || { telegram 'FAIL lock manutenzione occupato oltre 6 ore';exit 75; }
-rc=0;store begin "$RUN_ID" "$SCOPE" "$(date +%F)" "$RETRY" || rc=$?
-((rc!=75)) || { echo 'Duplicato giornaliero evitato; retry esplicito --retry';exit 0; }
+if ((SCHEDULED));then
+    flock -w 21600 9 || { telegram 'FAIL lock manutenzione occupato oltre 6 ore';exit 75; }
+else
+    flock -n 9 || { echo 'Manutenzione gia in corso: nessun secondo job avviato';exit 75; }
+fi
+rc=0;store begin "$RUN_ID" "$SCOPE" "$(date +%F)" "$(( !SCHEDULED || RETRY ))" || rc=$?
+((rc!=75)) || { echo 'Job cron gia registrato oggi: duplicato evitato. Per una nuova prova eseguire lo script manualmente senza --scheduled';exit 0; }
 ((rc==0)) || exit 1
 CLAIMED=1;trap 'on_exit $?' EXIT;trap 'exit 143' TERM HUP;trap 'exit 130' INT
+printf 'INIZIO %s - run %s\n' "$SCOPE" "$RUN_ID" | tee -a "$LOG"
 DIR="$STATE/runtime/$RUN_ID"
 BUNDLE=$(tar -C "$LIB" -czf - pve-guest-worker.sh guard.py docker-maint.py agent-migrate.py | base64 -w0) || exit 1
 declare -A BLOCKED=()
 pending=$(store pending) || exit 1
 while IFS='|' read -r id owner initial owned phase;do
     [[ -n "$id" ]] || continue
-    event WARN "LXC $id" "Recupero run $owner"
+    if [[ "$SCOPE" == wordpress && "$id" != 200 ]];then
+        event WARN "LXC $id" 'Recupero pendente lasciato al job generale; nessuna azione su questo guest'
+        continue
+    fi
+    event WARN "LXC $id" "Recupero stato iniziale della run $owner (non nuovi update)"
     if [[ "$phase" != rebooted && $(state "$id") == running ]] && deploy lxc "$id";then
         previous=$(remote lxc "$id" cat "$STATE/worker-status/$owner.status" 2>/dev/null) || previous=''
-        parse "LXC $id recupero" "$previous" "$owner"
+        parse "LXC $id recupero" "$previous" "$owner" 1
         if ((STATUS_COMPLETE && STATUS_REBOOT));then
             if ! power "$id" reboot;then action "LXC $id" 'Reboot pendente non completato';BLOCKED[$id]=1;continue;fi
         fi
     fi
     restore_guest "$id" "$initial" "$owned" || BLOCKED[$id]=1
 done <<< "$pending"
-unfinished=$(store unfinished "$RUN_ID") || exit 1
+unfinished=$(store unfinished "$RUN_ID" "$SCOPE") || exit 1
 while IFS= read -r owner;do [[ -n "$owner" ]] || continue;store event "$owner" FAIL orchestratore 'Run interrotto; recupero nel report successivo';store finish "$owner" >/dev/null || exit 1;done <<< "$unfinished"
-oldnodes=$(store nodes) || exit 1
+oldnodes=''
+if [[ "$SCOPE" == proxmox ]];then oldnodes=$(store nodes) || exit 1;fi
 while IFS='|' read -r owner ip;do
     [[ -n "$owner" ]] || continue
     if ping -c 2 -W 2 "$ip" >/dev/null 2>&1 || remote ssh "root@$ip" true >/dev/null 2>&1;then action nodo2 'Nodo acceso dopo job interrotto: lasciato acceso per verifica manuale';fi
     store node "$owner" "$ip" manual || exit 1
 done <<< "$oldnodes"
 node_ready=0;node_owned=0
+if [[ "$SCOPE" == proxmox && "$UPDATE_NODE2" == 1 && -z "$NODE2_IP" ]];then
+    event FAIL nodo2 'NODE2_IP mancante: nessun contatto o WOL';UPDATE_NODE2=0
+fi
 if [[ "$SCOPE" == proxmox && "$UPDATE_NODE2" == 1 ]];then
     if node_online "$NODE2_IP";then event NOTE nodo2 'Gia acceso: non verra spento'
     elif store node "$RUN_ID" "$NODE2_IP" wol-intent && [[ -n "$NODE2_MAC" ]] && wakeonlan -i "$NODE2_WOL_BROADCAST" "$NODE2_MAC" >>"$LOG" 2>&1;then node_owned=1;store node "$RUN_ID" "$NODE2_IP" owned || exit 1;event NOTE nodo2 'WOL inviato dopo ping/SSH negativi'
@@ -249,9 +293,9 @@ if [[ "$SCOPE" == proxmox ]];then
                 remote ssh "root@$NODE2_IP" python3 "$DIR/guard.py" shutdown "$RUN_ID" >>"$LOG" 2>&1 || true
                 off=0
                 for ((i=0;i<24;i++));do if ! ping -c 2 -W 2 "$NODE2_IP" >/dev/null 2>&1 && ! remote ssh "root@$NODE2_IP" true >/dev/null 2>&1;then off=1;break;fi;sleep 5;done
-                if ((off));then store node "$RUN_ID" "$NODE2_IP" closed || exit 1;else action nodo2 'Ancora acceso dopo richiesta shutdown';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
+                if ((off));then store node "$RUN_ID" "$NODE2_IP" closed || exit 1;event NOTE nodo2 "Aggiornato e spento dopo WOL";else action nodo2 'Ancora acceso dopo richiesta shutdown';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
             elif ((node_owned));then store node "$RUN_ID" "$NODE2_IP" closed || exit 1;event NOTE nodo2 'Lasciato acceso come configurato';fi
-        else action nodo2 'Update fallito; lasciato acceso';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
+        else action nodo2 'Una fase del worker e fallita (vedere errori precedenti); lasciato acceso';store node "$RUN_ID" "$NODE2_IP" manual || exit 1;fi
     fi
     for id in "${LXC_IDS[@]}";do update_lxc "$id";done
     for target in "${VM_SSH_TARGETS[@]}";do if deploy ssh "$target";then worker vm "$target" full || true;else event FAIL vm 'Deploy fallito';fi;done

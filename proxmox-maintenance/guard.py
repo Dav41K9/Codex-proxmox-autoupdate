@@ -17,25 +17,34 @@ def restore():
     if state['boot']==boot():
         for u,v in state['units'].items():
             if v['mask'] and cmd('systemctl','unmask','--runtime',u).returncode:raise RuntimeError('unmask '+u)
+        # Restore ALL dependencies before starting any timer.
+        for u,v in state['units'].items():
             if u.endswith('.timer') and v['active'] and cmd('systemctl','start',u).returncode:raise RuntimeError('restore '+u)
     p.unlink()
 def prepare(run):
+    # APT owns its locks. Only pause the known Paperless scheduling timer.
     p=ROOT/'quarantine.json'
     if p.exists():
-        s=json.loads(p.read_text())
-        if s['boot']==boot() and s.get('complete'):return
-        restore()
-    s={'boot':boot(),'run':run,'units':{},'complete':False}
+        old=json.loads(p.read_text())
+        if old.get('strategy')=='timer-stop' and old['boot']==boot() and old.get('complete'):
+            app_idle();return
+        restore()  # Repairs legacy masks in two passes before new work.
+    s={'boot':boot(),'run':run,'units':{},'complete':False,'strategy':'timer-stop'}
     if pathlib.Path('/run/systemd/system').exists():
-        for u in UNITS:
-            q=cmd('systemctl','show',u,'-p','LoadState','--value')
-            if q.returncode:raise RuntimeError('unit state unknown '+u)
-            if q.stdout.strip()=='not-found':continue
-            s['units'][u]={'mask':cmd('systemctl','is-enabled',u).stdout.strip() not in ('masked','masked-runtime'),'active':cmd('systemctl','is-active',u).stdout.strip()=='active'}
-            save(p,s)
-            if s['units'][u]['mask'] and cmd('systemctl','mask','--runtime',u).returncode:raise RuntimeError('mask '+u)
-            if cmd('systemctl','show',u,'-p','LoadState','--value').stdout.strip()!='masked':raise RuntimeError('mask not effective '+u)
-            if u.endswith('.timer') and s['units'][u]['active'] and cmd('systemctl','stop',u).returncode:raise RuntimeError('timer stop '+u)
+        u='paperless-import.timer'
+        q=cmd('systemctl','show',u,'-p','LoadState','--value')
+        if q.returncode:raise RuntimeError('timer state unknown '+u)
+        if q.stdout.strip()!='not-found':
+            q=cmd('systemctl','show',u,'-p','ActiveState','--value')
+            if q.returncode:raise RuntimeError('timer activity unknown '+u)
+            active=q.stdout.strip() in ('active','activating','reloading')
+            s['units'][u]={'mask':False,'active':active}
+            save(p,s)  # Save original state BEFORE stopping, for crash recovery.
+            if active and cmd('systemctl','stop',u).returncode:raise RuntimeError('timer stop '+u)
+            q=cmd('systemctl','show',u,'-p','ActiveState','--value')
+            if q.returncode or q.stdout.strip() not in ('inactive','failed'):raise RuntimeError('timer still active '+u)
+    # Never stop a service that is importing. Report failure and let it finish.
+    app_idle()
     s['complete']=True;save(p,s)
 def app_idle():
     if not pathlib.Path('/run/systemd/system').exists():return
@@ -53,6 +62,12 @@ def gate(paths=None):
         yield
     finally:
         for fd in fds:os.close(fd)
+def restore_worker():
+    # fd8 is inherited from the worker; do not reopen/relock a different fd.
+    fdstat=os.fstat(8);pathstat=(ROOT/'worker.lock').stat()
+    if (fdstat.st_dev,fdstat.st_ino)!=(pathstat.st_dev,pathstat.st_ino):raise RuntimeError('worker lock mismatch')
+    fcntl.flock(8,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    restore()
 def main():
     os.umask(0o077)
     if ROOT.is_symlink():raise RuntimeError('state symlink')
@@ -60,7 +75,13 @@ def main():
     if ROOT.stat().st_uid!=0 or ROOT.stat().st_mode&0o022:raise RuntimeError('state permissions')
     mode=sys.argv[1];run=sys.argv[2] if len(sys.argv)>2 else ''
     if mode=='prepare':prepare(run);return
-    if mode=='restore':restore();return
+    if mode=='restore-worker':
+        restore_worker();return
+    if mode=='restore':
+        with open(ROOT/'worker.lock','a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            restore()
+        return
     if mode=='app-idle':
         state=json.loads((ROOT/'quarantine.json').read_text())
         if state.get('boot')!=boot() or not state.get('complete'):raise RuntimeError('timer coordination incomplete')

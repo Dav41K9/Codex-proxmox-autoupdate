@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PVE Maintenance 4.0 - worker Linux / Docker / Hermes
+# PVE Maintenance 4.1 - worker Linux / Docker / Hermes
 # Eseguito soltanto dal coordinatore, su host / LXC / nodo2 / VM SSH.
 set -uo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -63,27 +63,37 @@ apt_stage() {
     fi
     # Non eseguire full-upgrade se l'aggiornamento indici fallisce: proseguire con altre fasi.
     local rc=0
-    if command -v timeout >/dev/null 2>&1; then
-        timeout --kill-after=60s "${APT_TIMEOUT}s" apt-get -o APT::Update::Error-Mode=any update >"$WORK/apt-update.log" 2>&1 || rc=$?
-    else
-        apt-get -o APT::Update::Error-Mode=any update >"$WORK/apt-update.log" 2>&1 || rc=$?
-    fi
+    note "APT: aggiornamento indici in corso"
+    local attempt
+    for ((attempt=0;attempt<=30;attempt++));do
+        rc=0
+        if command -v timeout >/dev/null 2>&1; then
+            LC_ALL=C timeout --kill-after=60s "${APT_TIMEOUT}s" apt-get -o APT::Update::Error-Mode=any update 2>&1 | tee "$WORK/apt-update.log" || rc=$?
+        else
+            LC_ALL=C apt-get -o APT::Update::Error-Mode=any update 2>&1 | tee "$WORK/apt-update.log" || rc=$?
+        fi
+        if ((rc==100 && attempt<30)) && grep -Eq 'Could not get lock|Unable to lock directory' "$WORK/apt-update.log";then
+            note 'APT: lock indici occupato, nuovo tentativo tra 10 secondi'
+            sleep 10
+        else break;fi
+    done
     if ((rc)); then
         fail "apt-get update (rc=$rc); full-upgrade saltato per non usare indici obsoleti"
-        tail -n 25 "$WORK/apt-update.log"
+
     else
         note "OK: apt-get update"
         local up_rc=0
         # Non uccidere mai dpkg a meta transazione: niente timeout per full-upgrade.
-        apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
-            full-upgrade >"$WORK/apt-upgrade.log" 2>&1 || up_rc=$?
-        tail -n 35 "$WORK/apt-upgrade.log"
+        note "APT: full-upgrade in corso (attesa lock fino a 300 secondi)"
+        apt-get -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+            full-upgrade 2>&1 | tee "$WORK/apt-upgrade.log" || up_rc=$?
+
         if ((up_rc)); then
             fail "apt-get full-upgrade (rc=$up_rc)"
         else
             note "OK: apt-get full-upgrade"
             local clean_rc=0
-            apt-get -y autoremove --purge >"$WORK/apt-autoremove.log" 2>&1 || clean_rc=$?
+            apt-get -y -o DPkg::Lock::Timeout=300 autoremove --purge 2>&1 | tee "$WORK/apt-autoremove.log" || clean_rc=$?
             if ((clean_rc)); then warn "apt autoremove non completato (rc=$clean_rc)"; fi
         fi
     fi
@@ -141,7 +151,7 @@ docker_phase() {
     local rc=0 line
     local -a args=()
     [[ "$MODE" != health ]] || args+=(--health)
-    python3 "$LIB/docker-maint.py" "${args[@]}" >"$WORK/docker.log" 2>&1 || rc=$?
+    python3 "$LIB/docker-maint.py" "${args[@]}" 2>&1 | tee "$WORK/docker.log" || rc=$?
     while IFS= read -r line;do case "$line" in FAIL\|*) fail "${line#*|}";;WARN\|*) warn "${line#*|}";;NOTE\|*) note "${line#*|}";;*) printf '%s\n' "$line";;esac;done <"$WORK/docker.log"
     ((rc==0)) || fail "Docker helper rc=$rc"
     if [[ "$MODE" != health && "$DOCKER_PRUNE" == 1 ]] && ((FAILURES==0));then run_cmd 'Prune immagini create prima di 14 giorni, nessun volume' docker image prune -af --filter "until=$DOCKER_IMAGE_PRUNE_AGE";fi
@@ -174,7 +184,7 @@ else
     if [[ "$MODE" != docker ]];then if ((prepared));then apt_stage;else fail 'APT rinviato: coordinamento incompleto';fi;fi
     if [[ "$GUEST_ID" == 1000 && "$KIND" == lxc ]];then hermes_stage
     elif [[ "$MODE" != apt ]];then docker_phase;fi
-    if [[ "$KIND" != lxc ]];then python3 "$LIB/guard.py" restore || fail 'Ripristino timer fallito';fi
+    if [[ "$KIND" != lxc ]];then python3 "$LIB/guard.py" restore-worker || fail 'Ripristino timer fallito';fi
 fi
 printf 'COMPLETE|failures=%d warnings=%d\n' "$FAILURES" "$WARNINGS" >>"$STATUS"
 ((FAILURES==0))
