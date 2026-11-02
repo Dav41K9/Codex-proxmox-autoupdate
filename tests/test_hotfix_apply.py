@@ -65,7 +65,7 @@ class Hotfix(unittest.TestCase):
 
     def test_failed_regression_test_prevents_switch(self):
         code=self.script.read_text()
-        code=code.replace('def main():','PAYLOAD["tests"]="raise RuntimeError(\'injected test failure\')"\n\ndef main():',1)
+        code=code.replace('\ndef main():\n','\nPAYLOAD["tests"]="raise RuntimeError(\'injected test failure\')"\n\ndef main():\n',1)
         self.script.write_text(code)
         q=self.run_patch('--apply')
         self.assertNotEqual(q.returncode,0);self.assertEqual(self.current.resolve(),self.old)

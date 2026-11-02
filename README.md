@@ -1,21 +1,29 @@
-# Codex-proxmox — manutenzione 4.1
+# Codex Proxmox autoupdate
 
-**[Scarica il pacchetto aggiornato 4.1](https://github.com/Dav41K9/Codex-proxmox/raw/refs/heads/main/dist/proxmox-maintenance-v4.1-reviewed.zip)**
+Manutenzione Proxmox con due job separati: generale (APT nodi/guest, Docker e Hermes) e WordPress (Compose/build e standalone LXC 200).
 
-[Guida breve](proxmox-maintenance/README-IT.md) · [Correzioni](proxmox-maintenance/CHANGELOG-4.1.md) · [Test e limiti](proxmox-maintenance/VALIDAZIONE-4.1.md) · [Risultati](tests/results.txt) · [SHA256](dist/SHA256SUMS)
+## Aggiornamento corrente: hotfix avvisi 4.1.1
 
-Due job: generale e WordPress. Output a video, report completi, Telegram breve. La4.1 elimina i mask dei timer che avevano causato i guasti del collaudo e include la riparazione dei journal legacy. Nessuna configurazione reale o log privato è pubblicato.
+- Condizioni accettate registrate come NOTE; WARN/FAIL per situazioni su cui intervenire.
+- Telegram con motivi sintetici degli avvisi, target senza doppioni e stato finale nodo 2.
+- Regole immagini coerenti anche con nomi Docker Hub completi.
+- Controllo della dashboard Hermes durante una finestra di stabilità.
 
-Installazione dal pacchetto estratto, come root sul nodo principale:
+[Spiegazione, limiti e comandi](docs/AVVISI-4.1.1-IT.md).
+
+[Singolo file da scaricare e applicare](fixes/apply-alerts-4.1.1.py): non richiede l'installer, non modifica cron/configurazione e conserva la release precedente. Repository privata: scaricare il file con browser autenticato, poi copiarlo sul nodo principale.
+
+## Baseline 4.1
+
+[Guida originale](proxmox-maintenance/README-IT.md) · [Validazione baseline](proxmox-maintenance/VALIDAZIONE-4.1.md) · [ZIP 4.1](dist/proxmox-maintenance-v4.1-reviewed.zip) · [Checksum ZIP](dist/SHA256SUMS).
+
+Gli ZIP sono conservati come baseline e **non includono il nuovo hotfix**. I sorgenti in proxmox-maintenance includono la correzione corrente. I report e le configurazioni reali dell'utente non vengono pubblicati nella repository.
+
+## Test
 
 ```bash
-bash install.sh --check
-bash install.sh --install
-maintenance-recover.sh
+python3 -m unittest discover -s tests -v
+for f in proxmox-maintenance/*.sh; do bash -n "$f"; done
 ```
 
-Leggere l'esito di ciascun comando. Il recupero non esegue aggiornamenti, WOL o spegnimenti. Poi collaudare `update-web.sh` e `update-proxmox-guests.sh` prima di abilitare cron. Non serve --retry per ripetere un lancio manuale. Il cron resta un passo esplicito: `bash install.sh --enable-cron`.
-
-La versione precedente è preservata nella storia Git; le patch in `fixes/` sono storiche e confluite nella4.1. La guida lunga del primo collaudo non va usata come procedura di installazione della nuova versione.
-
-Test riproducibili: `python3 -m unittest discover -s tests -v`. Nessuna esecuzione su Proxmox è stata effettuata dalla revisione.
+Le prove del file hotfix richiedono una checkout Git con la baseline nella storia e un runner root isolato; non eseguirle per curiosità sul cluster produttivo. Sul nodo, usare i 19 test incorporati nella modalità --check del file hotfix.
