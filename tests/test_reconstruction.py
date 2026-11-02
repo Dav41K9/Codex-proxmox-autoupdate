@@ -112,10 +112,10 @@ class Compose(Base):
     def test_unhealthy_fails(self):
         with patch.dict(os.environ,COMPOSE_WAIT_SECONDS='0'),patch.object(dm,'inspect',return_value={'Running':True,'Health':{'Status':'unhealthy'}}):dm.health(['c'])
         self.assertEqual(dm.FAIL,1)
-    def test_running_without_health_is_warn(self):
+    def test_running_without_health_is_note(self):
         buf=io.StringIO()
         with contextlib.redirect_stdout(buf),patch.object(dm,'inspect',return_value={'Running':True}):dm.health(['c'])
-        self.assertIn('WARN|',buf.getvalue());self.assertEqual(dm.FAIL,0)
+        self.assertIn('NOTE|',buf.getvalue());self.assertNotIn('WARN|',buf.getvalue());self.assertEqual(dm.FAIL,0)
     def test_project_failure_continues_next(self):
         calls=[]
         def project(n,*args):calls.append(n);raise RuntimeError('injected')

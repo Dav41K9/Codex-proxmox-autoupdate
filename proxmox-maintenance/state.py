@@ -58,20 +58,37 @@ CREATE TABLE IF NOT EXISTS archives(name TEXT PRIMARY KEY,sha TEXT,created REAL,
             link=self.root/'latest.md';temp=self.root/'.latest.tmp';temp.unlink(missing_ok=True);temp.symlink_to('reports/'+cached[0].name);os.replace(temp,link)
         return status,name
     def summary(self,run):
-        groups={}
+        def target_name(value):
+            value=' '.join(value.split())
+            match=re.fullmatch(r'lxc\s+(\d+)(.*)',value,re.I)
+            if match:return 'LXC '+match[1]+match[2]
+            if re.match(r'^(node2|nodo2)(\s|$)',value,re.I):return 'Nodo 2'
+            if value.lower()=='host':return 'Host'
+            return value
+        rows=[(level,target_name(target),' '.join(msg.split())) for level,target,msg in
+              self.db.execute('SELECT level,target,msg FROM events WHERE run=? ORDER BY rowid',(run,))]
         rank={'NOTE':0,'REBOOT':0,'WARN':1,'FAIL':2,'ACTION':3}
-        for level,target,msg in self.db.execute('SELECT level,target,msg FROM events WHERE run=?',(run,)):
-            target=target.strip()
-            if target not in groups or rank[level]>rank[groups[target][0]]:groups[target]=(level,msg)
-        counts=[sum(rank[v[0]]==0 for v in groups.values()),sum(rank[v[0]]>=2 for v in groups.values()),sum(rank[v[0]]==1 for v in groups.values())]
+        groups={}
+        for level,target,msg in rows:
+            groups[target]=max(groups.get(target,0),rank[level])
+        counts=[sum(v==0 for v in groups.values()),sum(v>=2 for v in groups.values()),sum(v==1 for v in groups.values())]
         lines=[f'✅ OK {counts[0]} | ❌ FAIL {counts[1]} | WARN {counts[2]} (target)']
-        bad=sorted(((t,v) for t,v in groups.items() if rank[v[0]]>=2),key=lambda x:-rank[x[1][0]])
-        for target,(level,msg) in bad[:8]:lines.append(target[:48]+': '+('INTERVENTO: ' if level=='ACTION' else '')+msg.replace('\n',' ')[:100])
-        if len(bad)>8:lines.append(f'Altri {len(bad)-8} target con errori: vedere report.')
-        if counts[2]:lines.append('Dettagli WARN nel report completo.')
-        reboot=sorted({t.strip() for (t,) in self.db.execute("SELECT target FROM events WHERE run=? AND level='REBOOT'",(run,))})
-        if reboot:lines.append('Reboot richiesti/eseguiti (dettagli nel report): '+', '.join(reboot)[:160])
-        lines.append('Report completo su host/NAS; consegna NAS verificata separatamente.')
+        issues=list(dict.fromkeys((level,target,msg) for level,target,msg in rows if rank[level]>0))
+        issues.sort(key=lambda row:-rank[row[0]])
+        for level,target,msg in issues[:6]:
+            label='INTERVENTO' if level=='ACTION' else level
+            lines.append(label+' '+target[:48]+': '+msg[:120])
+        if len(issues)>6:lines.append(f'Altri {len(issues)-6} avvisi/errori nel report.')
+        power=[msg for level,target,msg in rows if level=='NOTE' and target=='Nodo 2' and
+               ('Gia acceso' in msg or 'Aggiornato e spento' in msg)]
+        if power:lines.append('Nodo 2: '+power[-1][:120])
+        reboots={}
+        for level,target,msg in rows:
+            if level=='REBOOT':
+                reboots[target]=reboots.get(target,False) or 'Reboot completo verificato' in msg
+        if reboots:
+            lines.append('Reboot: '+', '.join(t+(' verificato' if done else 'richiesto') for t,done in sorted(reboots.items()))[:160])
+        lines.append('Dettagli nel report host; esito consegna NAS separato.')
         return '\n'.join(lines)
     def archive(self,mount):
         fd=os.open(self.root/'archive.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)

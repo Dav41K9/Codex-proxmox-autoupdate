@@ -1,0 +1,21 @@
+name: Validate actionable alerts
+on:
+  push:
+    branches: [fix/actionable-alerts-20261102]
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Bash syntax
+        run: |
+          for f in proxmox-maintenance/*.sh; do bash -n "$f"; done
+      - name: Python syntax
+        run: python3 -m compileall -q proxmox-maintenance tests
+      - name: Isolated simulation suite
+        run: sudo python3 -m unittest discover -s tests -v

@@ -145,6 +145,33 @@ hermes_stage() {
 
 }
 
+hermes_health() {
+    local ready=0 broken=0 stable=0 previous='' sample='' i
+    # Observe the service for 20s, rather than accepting one active instant.
+    for ((i=0;i<120;i++));do
+        if systemctl is-active --quiet hermes-dashboard.service;then
+            sample=$(systemctl show hermes-dashboard.service -p MainPID -p NRestarts -p ExecMainStartTimestampMonotonic) || {
+                fail 'Stato dashboard Hermes non leggibile';broken=1;break;
+            }
+            if [[ "$sample" != *MainPID=* || "$sample" != *NRestarts=* ]];then
+                fail 'Stato dashboard Hermes incompleto';broken=1;break
+            fi
+            if [[ -n "$previous" && "$sample" != "$previous" ]];then
+                fail 'Dashboard Hermes riavviata durante il controllo: verificare il servizio';broken=1;break
+            fi
+            previous=$sample
+            stable=$((stable+1))
+            if ((stable>=11));then ready=1;break;fi
+        elif [[ -n "$previous" ]];then
+            fail 'Dashboard Hermes non stabile dopo avvio: verificare il servizio';broken=1;break
+        fi
+        sleep 2
+    done
+    if ((ready));then note 'Dashboard Hermes attiva e stabile per 20 secondi'
+    elif ((broken==0));then fail 'Dashboard Hermes non pronta entro attesa';fi
+    note 'Controllo di servizio; risposta applicativa del gateway non sondata'
+}
+
 docker_phase() {
     [[ "$GUEST_ID" != 1000 && "$SKIP_DOCKER" != 1 && ( "$KIND" == lxc || "$KIND" == vm ) ]] || return 0
     command -v docker >/dev/null || { note 'Docker non installato';return 0; }
@@ -160,10 +187,7 @@ export RUN_ID KIND GUEST_ID COMPOSE_DIRS_B64=${COMPOSE_DIRS_B64:-} COMPOSE_WAIT_
 printf 'RUN|%s\n' "$RUN_ID" >>"$STATUS"
 if [[ "$MODE" == health ]];then
     if [[ "$GUEST_ID" == 1000 ]];then
-        ready=0
-        for ((i=0;i<120;i++));do if systemctl is-active --quiet hermes-dashboard.service;then ready=1;break;fi;sleep 2;done
-        ((ready)) || fail 'Dashboard Hermes non attiva dopo reboot'
-        warn 'Gateway/checkout non verificati funzionalmente'
+        hermes_health
     else docker_phase;fi
 else
     if [[ ( "$KIND" == lxc || "$KIND" == vm ) && "$GUEST_ID" != 1000 ]] && command -v docker >/dev/null;then

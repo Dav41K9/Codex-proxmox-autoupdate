@@ -78,23 +78,35 @@ def mounts(model,rows,selected,web):
             expected[m['target']]=(m.get('type'),source,not m.get('read_only',False))
         for m in inspect(row['id'],'.Mounts'):
             if m['Type'] in ('bind','volume') and expected.get(m['Destination'])!=(m['Type'],m.get('Name') or m.get('Source'),m.get('RW',True)):raise ValueError('Persistent mount change: '+n)
+def canonical_repo(repo):
+    # Docker Hub aliases identify the same image; never rewrite private registries.
+    for prefix in ('docker.io/','index.docker.io/','registry-1.docker.io/'):
+        if repo.startswith(prefix):
+            repo=repo[len(prefix):]
+            break
+    if repo.startswith('library/'):repo=repo[len('library/'):]
+    return repo
+
 def override(model,name,wd):
     images={}
     for n,v in model['services'].items():
         image=v.get('image','')
         if v.get('build'):continue
-        if '@sha256:' in image or image.startswith('sha256:') or re.fullmatch('[0-9a-f]{12,64}',image):emit('WARN',n+': pinned digest/image ID');continue
+        if '@sha256:' in image or image.startswith('sha256:') or re.fullmatch('[0-9a-f]{12,64}',image):emit('WARN',n+': digest/ID immutabile: scegliere un tag aggiornabile');continue
         repo,tag=(image.rsplit(':',1) if ':' in image.rsplit('/',1)[-1] else (image,'latest'));target=None
-        if repo in ('postgres','mariadb','couchdb'):
+        key=canonical_repo(repo)
+        if key in ('postgres','mariadb','couchdb'):
             m=re.match(r'^(\d+)(?:\.(\d+))?',tag)
             if m:
-                target=m[1]+('.'+m[2] if repo=='mariadb' and m[2] else '')+('-alpine' if 'alpine' in tag else '')
-                emit('WARN',n+': ramo DB '+target+'; major/EOL richiedono verifica')
-            else:emit('WARN',n+': database su canale mobile esistente; compatibilita major non garantita')
-        elif repo in ('redis','nginx'):target='alpine' if 'alpine' in tag else 'latest'
-        elif repo in ('gotenberg/gotenberg','apache/tika','ghcr.io/paperless-ngx/paperless-ngx'):target='latest'
-        if target:images[n]={'image':repo+':'+target}
-        elif re.match(r'\d',tag):emit('WARN',n+': tag fisso '+image)
+                target=m[1]+('.'+m[2] if key=='mariadb' and m[2] else '')+('-alpine' if 'alpine' in tag else '')
+                emit('NOTE',n+': aggiornamenti automatici nel ramo DB '+target+'; migrazioni major escluse')
+            else:emit('NOTE',n+': canale DB mobile esistente mantenuto: '+image)
+        elif key in ('redis','nginx'):target='alpine' if 'alpine' in tag else 'latest'
+        elif key in ('gotenberg/gotenberg','apache/tika','ghcr.io/paperless-ngx/paperless-ngx'):target='latest'
+        if target:
+            images[n]={'image':repo+':'+target}
+            if image!=repo+':'+target:emit('NOTE',n+': canale automatico '+image+' -> '+repo+':'+target)
+        elif re.match(r'\d',tag):emit('WARN',n+': canale numerico senza regola automatica: '+image+'; verificare il ramo desiderato')
     if not images:return None
     p=ROOT/'compose-policy';p.mkdir(mode=0o700,parents=True,exist_ok=True)
     if p.is_symlink() or p.stat().st_uid!=os.geteuid() or p.stat().st_mode&0o022:raise ValueError('unsafe policy directory')
@@ -108,7 +120,7 @@ def health(names):
             try:
                 state=inspect(name,'.State')
                 if state.get('Running') and state.get('Health',{}).get('Status','none') in ('healthy','none'):
-                    if 'Health' not in state:emit('WARN',name+': running senza healthcheck applicativo')
+                    if 'Health' not in state:emit('NOTE',name+': running; healthcheck applicativo non configurato')
                     break
             except Exception:pass
             if time.monotonic()>=deadline:emit('FAIL',name+': non pronto/unhealthy');break
@@ -145,8 +157,8 @@ def standalone(rows):
         name=inspect(r['id'],'.Name').lstrip('/');image=inspect(r['id'],'.Config.Image')
         if '.pve-old-' in name or (name=='portainer_agent' and AGENT_FAILED):continue
         if name.startswith('pve-wt-'):raise RuntimeError('Watchtower precedente ancora attivo')
-        if '@sha256:' in image or image.startswith('sha256:') or re.fullmatch('[0-9a-f]{12,64}',image):emit('WARN',name+': image ID/digest non aggiornabile');continue
-        if re.search(r':\d',image):emit('WARN',name+': tag fisso '+image)
+        if '@sha256:' in image or image.startswith('sha256:') or re.fullmatch('[0-9a-f]{12,64}',image):emit('WARN',name+': digest/ID immutabile: scegliere un tag aggiornabile');continue
+        if re.search(r':\d',image):emit('WARN',name+': standalone su canale numerico '+image+'; Watchtower aggiorna solo questo tag')
         names.append(name)
     if not names:return
     if os.environ.get('STANDALONE_MODE','watchtower')!='watchtower':emit('WARN','Standalone disabilitati');return

@@ -203,7 +203,7 @@ web_health(){
 }
 
 finish(){
-    local result body pid done=0
+    local result body pid done=0 archive_reason
     result=$(store finish "$RUN_ID") || return 1
     FINAL=1
     body=$(store summary "$RUN_ID") || body='FAIL lettura riepilogo'
@@ -212,7 +212,11 @@ finish(){
     if ((done)) && wait "$pid";then :;else
         kill "$pid" 2>/dev/null || true
         [[ "$result" == FAIL\|* ]] || result="WARN|${result#*|}"
-        body+=$'\nWARN NAS non disponibile: report conservati in coda locale'
+        archive_reason=$(tail -n 1 "$STATE/archive.log" 2>/dev/null) || archive_reason=''
+        archive_reason=${archive_reason//$'\r'/ }
+        body+=$'\nWARN archivio NAS: report in coda locale. '
+        body+="${archive_reason:0:160}"
+        [[ -n "$archive_reason" ]] || body+='Attesa scaduta; verificare mount e archive.log'
         printf '%s ARCHIVE_PENDING\n' "$RUN_ID" >>"$STATE/delivery.log"
     fi
     printf 'Report: %s/reports/%s\n' "$STATE" "${result#*|}"
