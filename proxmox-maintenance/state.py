@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS guests(id TEXT PRIMARY KEY,owner TEXT,initial TEXT,ow
 CREATE TABLE IF NOT EXISTS nodes(run TEXT PRIMARY KEY,ip TEXT,phase TEXT);
 CREATE TABLE IF NOT EXISTS finalizations(run TEXT PRIMARY KEY,payload BLOB,status TEXT,created REAL);
 CREATE TABLE IF NOT EXISTS archives(name TEXT PRIMARY KEY,sha TEXT,created REAL,done INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS reminders(scope TEXT PRIMARY KEY,month TEXT);
 ''')
     def begin(self,run,scope,day,retry):
         if not re.fullmatch('[A-Za-z0-9_-]+',run):raise ValueError('run')
@@ -57,6 +58,28 @@ CREATE TABLE IF NOT EXISTS archives(name TEXT PRIMARY KEY,sha TEXT,created REAL,
             for p in cached[10:]:p.unlink()
             link=self.root/'latest.md';temp=self.root/'.latest.tmp';temp.unlink(missing_ok=True);temp.symlink_to('reports/'+cached[0].name);os.replace(temp,link)
         return status,name
+    def reminder(self,run):
+        row=self.db.execute('SELECT scope,day FROM runs WHERE id=?',(run,)).fetchone()
+        if not row:return None
+        scope,day=row;month=day[:7]
+        if scope not in ('wordpress','proxmox') or not re.fullmatch(r'\d{4}-\d{2}',month):return None
+        if self.db.execute('SELECT 1 FROM reminders WHERE scope=? AND month=?',(scope,month)).fetchone():return None
+        subjects=[]
+        for target,msg in self.db.execute("SELECT target,msg FROM events WHERE run=? AND level='NOTE' ORDER BY rowid",(run,)):
+            match=re.match(r'^([^:]+): aggiornamenti automatici nel ramo DB (\S+)(?: \(([^)]+)\))?',msg)
+            if match:
+                target=re.sub(r'^lxc\s+', 'LXC ',target.strip(),flags=re.I)
+                subject=target+' / '+match[1]+': '+(match[3] or 'DB')+' '+match[2]
+                if subject not in subjects:subjects.append(subject)
+        if not subjects:return None
+        inventory='; '.join(subjects[:4])[:240]
+        if len(subjects)>4:inventory+='; altri nel report'
+        return (scope,month,'PROMEMORIA mensile: '+inventory+
+                '. Patch automatiche nel ramo; major da pianificare. Verificare supporto/EOL e backup prima di migrare.')
+    def reminder_delivered(self,run):
+        notice=self.reminder(run)
+        if notice:
+            with self.db:self.db.execute('INSERT OR REPLACE INTO reminders VALUES(?,?)',notice[:2])
     def summary(self,run):
         def target_name(value):
             value=' '.join(value.split())
@@ -88,6 +111,8 @@ CREATE TABLE IF NOT EXISTS archives(name TEXT PRIMARY KEY,sha TEXT,created REAL,
                 reboots[target]=reboots.get(target,False) or 'Reboot completo verificato' in msg
         if reboots:
             lines.append('Reboot: '+', '.join(t+(' verificato' if done else 'richiesto') for t,done in sorted(reboots.items()))[:160])
+        notice=self.reminder(run)
+        if notice:lines.append(notice[2])
         lines.append('Dettagli nel report host; esito consegna NAS separato.')
         return '\n'.join(lines)
     def archive(self,mount):
@@ -144,6 +169,7 @@ def main():
         for (r,) in s.db.execute('SELECT id FROM runs WHERE finished=0 AND id!=? AND scope=?',a):print(r)
     elif cmd=='finish':print('|'.join(s.finish(a[0])))
     elif cmd=='summary':print(s.summary(a[0]))
+    elif cmd=='reminder-delivered':s.reminder_delivered(a[0])
     elif cmd=='alert':
         for level,target,msg in s.db.execute("SELECT level,target,msg FROM events WHERE run=? AND level!='NOTE' ORDER BY CASE level WHEN 'ACTION' THEN 0 WHEN 'FAIL' THEN 1 ELSE 2 END",a):print(level+' '+target+': '+msg)
     elif cmd=='archive':s.archive(a[0])

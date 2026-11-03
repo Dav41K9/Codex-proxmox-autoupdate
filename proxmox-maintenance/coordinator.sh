@@ -221,6 +221,9 @@ finish(){
     fi
     printf 'Report: %s/reports/%s\n' "$STATE" "${result#*|}"
     telegram "[$SCOPE] ${result%%|*}"$'\n'"$body"$'\n'"Run: $RUN_ID" || { printf '%s TELEGRAM_FAILED\n' "$RUN_ID" >>"$STATE/delivery.log";echo 'FAIL invio Telegram; report conservato su host';return 1; }
+    if [[ "$SEND_TELEGRAM" == 1 && "$NO_TELEGRAM" == 0 ]];then
+        store reminder-delivered "$RUN_ID" || { echo 'WARN ricevuta promemoria non salvata: potrebbe ripetersi';return 1; }
+    fi
     printf 'FINE %s: %s (run %s)\n' "$SCOPE" "${result%%|*}" "$RUN_ID"
     [[ "$result" != FAIL\|* ]]
 }

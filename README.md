@@ -6,12 +6,13 @@ Manutenzione Proxmox con due job separati: generale (APT nodi/guest, Docker e He
 
 - Condizioni accettate registrate come NOTE; WARN/FAIL per situazioni su cui intervenire.
 - Telegram con motivi sintetici degli avvisi, target senza doppioni e stato finale nodo 2.
+- Promemoria mensile dei database che richiedono una migrazione major pianificata.
 - Regole immagini coerenti anche con nomi Docker Hub completi.
 - Controllo della dashboard Hermes durante una finestra di stabilità.
 
 [Spiegazione, limiti e comandi](docs/AVVISI-4.1.1-IT.md).
 
-[Singolo file da scaricare e applicare](fixes/apply-alerts-4.1.1.py): non richiede l'installer, non modifica cron/configurazione e conserva la release precedente. Repository privata: scaricare il file con browser autenticato, poi copiarlo sul nodo principale.
+[Singolo file da scaricare e applicare](fixes/apply-alerts-4.1.1.py): non richiede l'installer, non modifica cron/configurazione e conserva la release precedente. Repository pubblica: scaricare il singolo file con curl sul nodo principale, preferibilmente dal commit indicato nella guida di consegna.
 
 ## Baseline 4.1
 
@@ -26,4 +27,4 @@ python3 -m unittest discover -s tests -v
 for f in proxmox-maintenance/*.sh; do bash -n "$f"; done
 ```
 
-Le prove del file hotfix richiedono una checkout Git con la baseline nella storia e un runner root isolato; non eseguirle per curiosità sul cluster produttivo. Sul nodo, usare i 19 test incorporati nella modalità --check del file hotfix.
+Le prove del file hotfix richiedono una checkout Git con la baseline nella storia e un runner root isolato; non eseguirle per curiosità sul cluster produttivo. Sul nodo, usare i 28 test incorporati nella modalità --check del file hotfix.

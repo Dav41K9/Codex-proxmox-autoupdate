@@ -99,7 +99,7 @@ def override(model,name,wd):
             m=re.match(r'^(\d+)(?:\.(\d+))?',tag)
             if m:
                 target=m[1]+('.'+m[2] if key=='mariadb' and m[2] else '')+('-alpine' if 'alpine' in tag else '')
-                emit('NOTE',n+': aggiornamenti automatici nel ramo DB '+target+'; migrazioni major escluse')
+                emit('NOTE',n+': aggiornamenti automatici nel ramo DB '+target+' ('+key+'); migrazioni major escluse')
             else:emit('NOTE',n+': canale DB mobile esistente mantenuto: '+image)
         elif key in ('redis','nginx'):target='alpine' if 'alpine' in tag else 'latest'
         elif key in ('gotenberg/gotenberg','apache/tika','ghcr.io/paperless-ngx/paperless-ngx'):target='latest'

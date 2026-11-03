@@ -104,6 +104,89 @@ class Alerts(unittest.TestCase):
         status,_=s.finish('test')
         self.assertEqual(status,'OK')
 
+
+    def monthly_ledger(self):
+        s=self.ledger()
+        s.db.execute("UPDATE runs SET day='2026-11-03' WHERE id='test'")
+        s.db.commit()
+        s.event('test','NOTE','lxc 106','db: aggiornamenti automatici nel ramo DB 18 (postgres); migrazioni major escluse')
+        return s
+
+    def test_monthly_reminder_is_information_not_warning(self):
+        s=self.monthly_ledger();text=s.summary('test')
+        self.assertIn('PROMEMORIA mensile:',text);self.assertIn('postgres 18',text)
+        self.assertIn('WARN 0',text);self.assertEqual(s.finish('test')[0],'OK')
+
+    def test_undelivered_reminder_is_retried(self):
+        s=self.monthly_ledger()
+        self.assertIn('PROMEMORIA mensile:',s.summary('test'))
+        self.assertIn('PROMEMORIA mensile:',s.summary('test'))
+        self.assertEqual(s.db.execute('SELECT count(*) FROM reminders').fetchone()[0],0)
+
+    def test_acknowledged_reminder_is_once_per_month_and_scope(self):
+        s=self.monthly_ledger();s.reminder_delivered('test')
+        s.begin('next','proxmox','2026-11-20',False)
+        s.event('next','NOTE','lxc 106','db: aggiornamenti automatici nel ramo DB 18 (postgres); migrazioni major escluse')
+        self.assertNotIn('PROMEMORIA mensile:',s.summary('next'))
+
+    def test_next_month_reminds_again(self):
+        s=self.monthly_ledger();s.reminder_delivered('test')
+        s.begin('next','proxmox','2026-12-01',False)
+        s.event('next','NOTE','lxc 106','db: aggiornamenti automatici nel ramo DB 18 (postgres); migrazioni major escluse')
+        self.assertIn('PROMEMORIA mensile:',s.summary('next'))
+
+    def test_wordpress_gets_its_own_monthly_reminder(self):
+        s=self.monthly_ledger();s.reminder_delivered('test')
+        s.begin('web','wordpress','2026-11-04',False)
+        s.event('web','NOTE','lxc 200','db: aggiornamenti automatici nel ramo DB 12.3 (mariadb); migrazioni major escluse')
+        self.assertIn('mariadb 12.3',s.summary('web'))
+
+    def test_no_inventory_does_not_consume_reminder(self):
+        s=self.ledger();s.db.execute("UPDATE runs SET day='2026-11-03'");s.db.commit()
+        s.reminder_delivered('test')
+        self.assertNotIn('PROMEMORIA mensile:',s.summary('test'))
+        self.assertEqual(s.db.execute('SELECT count(*) FROM reminders').fetchone()[0],0)
+
+    def delivery(self,enabled,rc):
+        source=(SRC/'coordinator.sh').read_text()
+        function='finish(){'+source.split('finish(){',1)[1].split('\non_exit(){',1)[0]
+        harness=r'''
+set -u
+STATE=$FIX
+RUN_ID=test
+SCOPE=proxmox
+NAS_MOUNT=/unused
+NO_TELEGRAM=0
+store(){
+  case "$1" in
+    finish) echo 'OK|test.md';;
+    summary) echo 'report';;
+    archive) return 0;;
+    reminder-delivered) echo ACK >>"$FIX/ack";;
+    *) return 99;;
+  esac
+}
+telegram(){ return "$TELEGRAM_RC"; }
+kill(){ return 1; }
+sleep(){ :; }
+'''
+        q=subprocess.run(['bash','-c',harness+'\n'+function+'\nfinish'],
+            env=dict(os.environ,FIX=str(self.root),SEND_TELEGRAM=str(enabled),TELEGRAM_RC=str(rc)),
+            capture_output=True,text=True,timeout=10)
+        return q,(self.root/'ack').exists()
+
+    def test_telegram_success_acknowledges_reminder(self):
+        q,ack=self.delivery(1,0)
+        self.assertEqual(q.returncode,0,q.stderr);self.assertTrue(ack)
+
+    def test_telegram_failure_does_not_acknowledge_reminder(self):
+        q,ack=self.delivery(1,1)
+        self.assertNotEqual(q.returncode,0);self.assertFalse(ack)
+
+    def test_disabled_telegram_does_not_acknowledge_reminder(self):
+        q,ack=self.delivery(0,0)
+        self.assertEqual(q.returncode,0,q.stderr);self.assertFalse(ack)
+
     def hermes(self,scenario):
         source=(SRC/'pve-guest-worker.sh').read_text()
         function=source.split('hermes_health() {',1)[1].split('\ndocker_phase()',1)[0]
