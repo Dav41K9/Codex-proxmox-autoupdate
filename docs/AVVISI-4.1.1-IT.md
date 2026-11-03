@@ -70,7 +70,7 @@ La vecchia release permette il rollback del codice. Non equivale a un rollback d
 ## Collaudo
 
 I test GitHub sono eseguiti su runner isolato, senza credenziali Proxmox, NAS o Telegram: [esecuzioni del ramo di validazione](https://github.com/Dav41K9/Codex-proxmox-autoupdate/actions?query=branch%3Afix%2Factionable-alerts-20261102).
-Sono inclusi i test precedenti, 28 regressioni sugli avvisi e 5 prove della patch (check senza switch, applicazione/idempotenza/backup, modifiche locali rifiutate, lock occupato, test fallito che impedisce lo switch).
+**113 test superati il 3 novembre 2026**, oltre ai controlli sintattici Bash/Python: [run verificata](https://github.com/Dav41K9/Codex-proxmox-autoupdate/actions/runs/41580655490), [riepilogo risultati](../tests/results-4.1.1.txt). Sono inclusi i test precedenti, 28 regressioni sugli avvisi e 5 prove della patch (check senza switch, applicazione/idempotenza/backup, modifiche locali rifiutate, lock occupato, test fallito che impedisce lo switch).
 
 Il workflow è temporaneo sul ramo di validazione; non introduce servizi o scheduler sull'host. Il collaudo live della nuova notifica, del promemoria e delle nuove immagini resta al primo job successivo. Nessun updater è stato eseguito sul cluster dall'assistente.
 

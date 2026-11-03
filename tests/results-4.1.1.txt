@@ -1,0 +1,20 @@
+Validazione hotfix 4.1.1 con promemoria mensile
+Data: 2026-11-03
+Commit testato: 3a0a6759ab0192155a2effad83aba48b23aa9d14
+GitHub Actions: https://github.com/Dav41K9/Codex-proxmox-autoupdate/actions/runs/41580655490
+Runner isolato: ubuntu-latest
+Comandi:
+  for f in proxmox-maintenance/*.sh; do bash -n "$f"; done
+  python3 -m compileall -q proxmox-maintenance tests
+  sudo python3 -m unittest discover -s tests -v
+
+Bash syntax: SUCCESS
+Python syntax: SUCCESS
+Ran 113 tests in 2.797s
+OK
+
+80 test della base, 28 regressioni alert/promemoria/Hermes e 5 prove del file hotfix.
+Le prove del file hotfix usano directory temporanee e percorsi sostituiti.
+Nessun comando di manutenzione, accesso NAS, invio Telegram o collegamento SSH reale al cluster.
+ShellCheck non eseguito in questa validazione.
+I test non certificano disponibilita applicativa o compatibilita di immagini future.
