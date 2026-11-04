@@ -17,6 +17,7 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 : "${UPDATE_HOST:=1}" "${UPDATE_NODE2:=0}" "${NODE2_IP:=}" "${NODE2_MAC:=}" "${NODE2_WOL_BROADCAST:=255.255.255.255}"
 : "${NODE2_STOP_AFTER:=1}" "${START_STOPPED_LXC:=1}" "${STOP_LXC_STARTED_BY_SCRIPT:=1}" "${CREATE_SNAPSHOTS:=1}"
 : "${WEB_COMPOSE_DIR:=/home/3dft/3dft-wordpress}" "${WEB_HTTP_HOST:=3dfactoryticino.ch}" "${NAS_MOUNT:=/mnt/pve/NAS}"
+: "${NAS_PERMISSION_MODE:=private}"
 : "${SEND_TELEGRAM:=0}" "${COMPOSE_WAIT_SECONDS:=240}" "${APT_TIMEOUT:=3600}" "${DOCKER_PRUNE:=1}" "${STANDALONE_MODE:=watchtower}"
 declare -p DOCKER_SKIP_IDS >/dev/null 2>&1 || DOCKER_SKIP_IDS=(1000)
 declare -p SNAPSHOT_SKIP_IDS >/dev/null 2>&1 || SNAPSHOT_SKIP_IDS=(106)
@@ -28,6 +29,7 @@ declare -p LXC_COMPOSE_DIRS >/dev/null 2>&1 || declare -A LXC_COMPOSE_DIRS=()
 [[ "$COMPOSE_WAIT_SECONDS" =~ ^[1-9][0-9]{0,4}$ && "$APT_TIMEOUT" =~ ^[1-9][0-9]{0,5}$ ]] || exit 2
 for id in "${LXC_IDS[@]}";do [[ "$id" =~ ^[0-9]+$ ]] || exit 2;done
 [[ "$NAS_MOUNT" == /* && "$NAS_MOUNT" != / ]] || exit 2
+case "$NAS_PERMISSION_MODE" in private|server-acl) ;;*) echo 'NAS_PERMISSION_MODE non valido';exit 2;;esac
 if ((DRY)) || [[ ${DRY_RUN:-0} == 1 ]];then echo "DRY RUN $SCOPE: nessuna modifica; snapshot200=2+3; NAS=60giorni; Hermes import rinviato";exit 0;fi
 LOG=/var/log/pve-maintenance.log
 store(){ python3 "$LIB/state.py" "$STATE" "$@"; }
@@ -207,7 +209,7 @@ finish(){
     result=$(store finish "$RUN_ID") || return 1
     FINAL=1
     body=$(store summary "$RUN_ID") || body='FAIL lettura riepilogo'
-    store archive "$NAS_MOUNT" 9>&- >"$STATE/archive.log" 2>&1 & pid=$!
+    store archive "$NAS_MOUNT" "${NAS_PERMISSION_MODE:-private}" 9>&- >"$STATE/archive.log" 2>&1 & pid=$!
     for ((i=0;i<45;i++));do kill -0 "$pid" 2>/dev/null || { done=1;break; };sleep 1;done
     if ((done)) && wait "$pid";then :;else
         kill "$pid" 2>/dev/null || true

@@ -1,5 +1,5 @@
 """Exercise the one-file hotfix in a disposable filesystem, never the Proxmox host."""
-import fcntl, hashlib, json, os, pathlib, subprocess, sys, tempfile, unittest
+import fcntl, hashlib, json, os, pathlib, runpy, subprocess, sys, tempfile, unittest
 
 REPO=pathlib.Path(__file__).resolve().parents[1]
 BASE='ebc9f6249c4c23e51479cf9043a419860e36e6fc'
@@ -15,6 +15,7 @@ class Hotfix(unittest.TestCase):
         self.backups=self.root/'backups';self.backups.mkdir()
         self.lock=self.root/'worker.lock'
         self.before={}
+        self.expected=runpy.run_path(str(REPO/'fixes/apply-alerts-4.1.1.py'),run_name='fixture')['PAYLOAD']['files']
         for name in FILES:
             data=subprocess.check_output(['git','show',BASE+':proxmox-maintenance/'+name],cwd=REPO)
             (self.old/name).write_bytes(data);self.before[name]=data
@@ -43,7 +44,7 @@ class Hotfix(unittest.TestCase):
         new=self.current.resolve();self.assertNotEqual(new,self.old)
         for name,data in self.before.items():
             self.assertEqual((self.old/name).read_bytes(),data)
-            self.assertEqual((new/name).read_bytes(),(REPO/'proxmox-maintenance'/name).read_bytes())
+            self.assertEqual((new/name).read_bytes(),self.expected[name]['content'].encode())
         backup=list(self.backups.iterdir());self.assertEqual(len(backup),1)
         self.assertEqual((backup[0]/'previous-release').read_text().strip(),str(self.old))
         q=self.run_patch('--apply');self.assertEqual(q.returncode,0,q.stderr)

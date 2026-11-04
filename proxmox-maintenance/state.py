@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS reminders(scope TEXT PRIMARY KEY,month TEXT);
         if notice:lines.append(notice[2])
         lines.append('Dettagli nel report host; esito consegna NAS separato.')
         return '\n'.join(lines)
-    def archive(self,mount):
+    def archive(self,mount,permission_mode='private'):
+        if permission_mode not in ('private','server-acl'):raise ValueError('Invalid NAS permission mode')
         fd=os.open(self.root/'archive.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
         try:
             fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -126,7 +127,11 @@ CREATE TABLE IF NOT EXISTS reminders(scope TEXT PRIMARY KEY,month TEXT);
             for p in (dest.parent,dest):
                 if p.is_symlink():raise ValueError('NAS symlink')
                 p.mkdir(mode=0o700,exist_ok=True)
-                if p.stat().st_mode&0o077:raise ValueError('NAS subdirectory must be private0700')
+                # NFS can expose 0777 while DSM enforces server-side ACLs.
+                # Trust those ACLs only through explicit administrator configuration.
+                mode=p.stat().st_mode&0o777
+                if permission_mode=='private' and mode&0o077:
+                    raise ValueError('NAS '+str(p)+' permissions '+format(mode,'03o')+'; private0700 required (server-acl requires verified NAS ACLs)')
             for name,sha,created,done in list(self.db.execute('SELECT * FROM archives')):
                 target=dest/name;source=self.root/'outbox'/name
                 if not done:
@@ -135,7 +140,7 @@ CREATE TABLE IF NOT EXISTS reminders(scope TEXT PRIMARY KEY,month TEXT);
                     if target.is_symlink() or (target.exists() and target.read_bytes()!=data):raise ValueError('NAS collision')
                     atomic(target,data)
                     if hashlib.sha256(target.read_bytes()).hexdigest()!=sha:raise ValueError('NAS readback')
-                    atomic(self.root/'receipts'/(name+'.json'),json.dumps(dict(sha256=sha,archived=time.time())).encode())
+                    atomic(self.root/'receipts'/(name+'.json'),json.dumps(dict(sha256=sha,archived=time.time(),permission_mode=permission_mode)).encode())
                     with self.db:self.db.execute('UPDATE archives SET done=1 WHERE name=?',(name,))
                     source.unlink()
                 else:source.unlink(missing_ok=True)
@@ -172,7 +177,7 @@ def main():
     elif cmd=='reminder-delivered':s.reminder_delivered(a[0])
     elif cmd=='alert':
         for level,target,msg in s.db.execute("SELECT level,target,msg FROM events WHERE run=? AND level!='NOTE' ORDER BY CASE level WHEN 'ACTION' THEN 0 WHEN 'FAIL' THEN 1 ELSE 2 END",a):print(level+' '+target+': '+msg)
-    elif cmd=='archive':s.archive(a[0])
+    elif cmd=='archive':s.archive(a[0],a[1] if len(a)>1 else 'private')
     else:raise ValueError('command')
     return 0
 if __name__=='__main__':
